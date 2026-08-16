@@ -1974,9 +1974,16 @@ function renderPubChaveView(id){
   const done = games.filter(g => chave.resultados[g.num] && chave.resultados[g.num].vencedorSlot).length;
   const pct = total ? Math.round((done/total)*100) : 0;
 
+  // see renderChaveView for why group-phase games are combined into one
+  // list (in .num / play order) instead of separate per-group sections.
   const order = [];
   const byFase = {};
-  games.forEach(g => { if(!byFase[g.fase]){ byFase[g.fase]=[]; order.push(g.fase); } byFase[g.fase].push(g); });
+  const groupGames = [];
+  games.forEach(g => {
+    if(g.grupo){ groupGames.push(g); return; }
+    if(!byFase[g.fase]){ byFase[g.fase]=[]; order.push(g.fase); }
+    byFase[g.fase].push(g);
+  });
 
   if(pubActiveTab[id] === undefined) pubActiveTab[id] = 'todas';
   const tab = pubActiveTab[id];
@@ -2018,7 +2025,15 @@ function renderPubChaveView(id){
 
   const groupCard = renderGroupCard(chave);
 
-  const sections = order.map(fase => {
+  const groupSection = groupGames.length ? (() => {
+    const doneCount = groupGames.filter(g => chave.resultados[g.num] && chave.resultados[g.num].vencedorSlot).length;
+    return `<div class="phase-section">
+      <div class="phase-title"><span>Fase de grupos</span><span class="count">${doneCount}/${groupGames.length}</span></div>
+      ${groupGames.map(g => renderPubMatchCard(chave, g)).join('')}
+    </div>`;
+  })() : '';
+
+  const sections = groupSection + order.map(fase => {
     const arr = byFase[fase];
     const doneCount = arr.filter(g => chave.resultados[g.num] && chave.resultados[g.num].vencedorSlot).length;
     return `<div class="phase-section">
@@ -2449,10 +2464,18 @@ function renderChaveView(id){
   const done = games.filter(g => chave.resultados[g.num] && chave.resultados[g.num].vencedorSlot).length;
   const pct = Math.round((done/total)*100);
 
-  // group by phase, preserving first-appearance order
+  // group by phase, preserving first-appearance order.
+  // Group-phase games (grupo A/B/...) are pulled into one combined list in
+  // .num order (already alternated between groups, see _interleave_grupo_games
+  // in the build script) instead of separate per-group sections — this shows
+  // organizers the real play order (Grupo A jogo 1, Grupo B jogo 2, Grupo A
+  // jogo 3, ...) with each card's own group chip, rather than every Grupo A
+  // game bunched above every Grupo B game.
   const order = [];
   const byFase = {};
+  const groupGames = [];
   games.forEach(g => {
+    if(g.grupo){ groupGames.push(g); return; }
     if(!byFase[g.fase]){ byFase[g.fase]=[]; order.push(g.fase); }
     byFase[g.fase].push(g);
   });
@@ -2508,7 +2531,15 @@ function renderChaveView(id){
 
   const groupCard = renderGroupCard(chave);
 
-  const sections = order.map(fase => {
+  const groupSection = groupGames.length ? (() => {
+    const doneCount = groupGames.filter(g => chave.resultados[g.num] && chave.resultados[g.num].vencedorSlot).length;
+    return `<div class="phase-section">
+      <div class="phase-title"><span>Fase de grupos</span><span class="count">${doneCount}/${groupGames.length}</span></div>
+      ${groupGames.map(g => renderMatchCard(chave, g)).join('')}
+    </div>`;
+  })() : '';
+
+  const sections = groupSection + order.map(fase => {
     const arr = byFase[fase];
     const doneCount = arr.filter(g => chave.resultados[g.num] && chave.resultados[g.num].vencedorSlot).length;
     return `<div class="phase-section">
