@@ -824,8 +824,43 @@ let _chavesCache = [];
 let _eventosCache = [];
 let _categoriasCache = [];
 
+// Firestore flatly rejects any field that's a nested array — an array whose
+// elements are themselves arrays, like sets:[[21,15]] — with "Nested arrays
+// are not supported". Every placar in this app has always been stored that
+// way, which means every write of a real score has been rejected by the
+// REAL Firestore backend since day one (confirmed live on 16/08/2026: the
+// optimistic local update made it LOOK saved on screen, but nothing ever
+// reached the server — this, not connection quality, is the actual cause of
+// the 15/08/2026 incidente). Fixed by storing each set as a plain {a,b}
+// object on the wire (Firestore-safe) and converting back to the [a,b]
+// tuple every other part of the app already expects (UI, average calc,
+// tree view, W.O., conflict comparison) the instant it's read back — only
+// these two functions and the write boundary below need to know about the
+// wire format.
+function setsToFirestore(sets){
+  return (sets || []).map(s => ({ a: s[0], b: s[1] }));
+}
+function setsFromFirestore(sets){
+  return (sets || []).map(s => Array.isArray(s) ? s : [s.a, s.b]);
+}
+function resultadoToFirestore(res){
+  if(!res) return res;
+  return Object.assign({}, res, { sets: setsToFirestore(res.sets) });
+}
+function normalizeChaveFromFirestore(chave){
+  if(chave.resultados){
+    const conv = {};
+    Object.keys(chave.resultados).forEach(k => {
+      const r = chave.resultados[k];
+      conv[k] = r ? Object.assign({}, r, { sets: setsFromFirestore(r.sets) }) : r;
+    });
+    chave.resultados = conv;
+  }
+  return chave;
+}
+
 fbDb.collection('chaves').onSnapshot(snap => {
-  _chavesCache = snap.docs.map(d => Object.assign({ id: d.id }, d.data()));
+  _chavesCache = snap.docs.map(d => normalizeChaveFromFirestore(Object.assign({ id: d.id }, d.data())));
   route();
 }, err => { console.error('chaves onSnapshot', err); toast('Sem conexão com o servidor'); });
 
@@ -846,6 +881,15 @@ function updateChave(chave){
   if(idx >= 0) _chavesCache[idx] = chave; else _chavesCache.push(chave);
   const data = Object.assign({}, chave);
   delete data.id;
+  // Any full-chave write (renaming a time, editing a categoria, etc.) can
+  // carry already-scored resultados along with it — those need the same
+  // Firestore-safe {a,b} set shape as salvarResultado(), or the WHOLE write
+  // gets rejected (nested arrays), not just the score itself.
+  if(data.resultados){
+    const conv = {};
+    Object.keys(data.resultados).forEach(k => { conv[k] = resultadoToFirestore(data.resultados[k]); });
+    data.resultados = conv;
+  }
   fbDb.collection('chaves').doc(chave.id).set(data).catch(err => {
     console.error('updateChave', err);
     toast('Não deu pra salvar agora — vai sincronizar quando a internet voltar');
@@ -2578,16 +2622,19 @@ function salvarResultado(chaveId, gnum, novoResultado, opts){
     if(!snap.exists) throw new Error('CHAVE_SUMIU');
     const data = snap.data();
     const resultados = Object.assign({}, data.resultados || {});
-    const existing = resultados[gnum];
+    // existing comes straight off the server document — still in the
+    // Firestore-safe {a,b} wire shape, not the [a,b] tuples resultadosIguais
+    // expects — normalize before comparing.
+    const existing = resultados[gnum] ? Object.assign({}, resultados[gnum], { sets: setsFromFirestore(resultados[gnum].sets) }) : resultados[gnum];
     if(existing && existing.vencedorSlot && !force && !resultadosIguais(existing, novoResultado)){
       const err = new Error('CONFLICT');
       err.existing = existing;
       throw err;
     }
-    resultados[gnum] = Object.assign({}, novoResultado, {
+    resultados[gnum] = resultadoToFirestore(Object.assign({}, novoResultado, {
       lastEditedBy: (fbAuth.currentUser && fbAuth.currentUser.email) || null,
       lastEditedAt: firebase.firestore.FieldValue.serverTimestamp()
-    });
+    }));
     const update = { resultados };
     if(data.andamento && data.andamento[gnum]) update['andamento.'+gnum] = firebase.firestore.FieldValue.delete();
     tx.update(ref, update);
@@ -2626,10 +2673,10 @@ function salvarResultado(chaveId, gnum, novoResultado, opts){
 function salvarResultadoDireto(chaveId, gnum, novoResultado, localChave, localBackup){
   const ref = fbDb.collection('chaves').doc(chaveId);
   const update = {};
-  update['resultados.' + gnum] = Object.assign({}, novoResultado, {
+  update['resultados.' + gnum] = resultadoToFirestore(Object.assign({}, novoResultado, {
     lastEditedBy: (fbAuth.currentUser && fbAuth.currentUser.email) || null,
     lastEditedAt: firebase.firestore.FieldValue.serverTimestamp()
-  });
+  }));
   update['andamento.' + gnum] = firebase.firestore.FieldValue.delete();
   markSyncPending(1);
   return ref.update(update).then(() => {
