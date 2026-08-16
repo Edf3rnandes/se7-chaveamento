@@ -196,6 +196,17 @@ input[type=number]{text-align:center;}
   opacity:0; pointer-events:none; transition:opacity .25s, bottom .25s;
 }
 .toast.show{opacity:1; bottom:34px;}
+/* Persistent (does NOT auto-hide like .toast) banner shown while a placar
+   save is stuck waiting to reach the server — e.g. a transação failed on a
+   flaky connection and fell back to a plain queued write. Honest status,
+   not a promise that resolves itself invisibly. */
+.sync-banner{
+  position:fixed; left:0; right:0; bottom:0; z-index:60; background:#fff6e8; color:#8a5a12;
+  text-align:center; font-size:12.5px; font-weight:700; padding:9px 12px;
+  border-top:1.5px solid #f0d9a8; box-shadow:0 -2px 10px rgba(0,0,0,.06);
+  transform:translateY(100%); transition:transform .2s;
+}
+.sync-banner.show{transform:translateY(0);}
 .section-note{font-size:12.5px; color:var(--muted2); background:#f5f1e4; border-radius:10px; padding:8px 10px; margin-bottom:10px;}
 .status-badge{font-size:10.5px; font-weight:800; padding:3px 8px; border-radius:8px; margin-left:6px; vertical-align:middle; white-space:nowrap;}
 .status-badge.status-pending{background:#f1eee2; color:var(--muted2);}
@@ -382,6 +393,7 @@ textarea{
 <body>
 <div id="app"></div>
 <div class="toast" id="toast"></div>
+<div class="sync-banner" id="syncBanner"></div>
 
 <!-- Firebase (compat build: plain global "firebase" object, no ES modules —
      keeps every existing onclick="..." handler in this file working unchanged) -->
@@ -1027,6 +1039,25 @@ function toast(msg){
   t.classList.add('show');
   clearTimeout(window.__toastTimer);
   window.__toastTimer = setTimeout(()=>t.classList.remove('show'), 1800);
+}
+
+// Persistent (does NOT auto-hide) counter of placares still waiting on a
+// server ack — see salvarResultadoDireto(). Unlike toast(), this stays up
+// for as long as it's true, so it can't quietly disappear while still
+// actually unsynced (see incidente 15/08/2026).
+let _syncPendingCount = 0;
+function markSyncPending(delta){
+  _syncPendingCount = Math.max(0, _syncPendingCount + delta);
+  const el = document.getElementById('syncBanner');
+  if(!el) return;
+  if(_syncPendingCount > 0){
+    el.textContent = _syncPendingCount === 1
+      ? '🔄 1 placar aguardando confirmação do servidor — não feche o navegador'
+      : ('🔄 ' + _syncPendingCount + ' placares aguardando confirmação do servidor — não feche o navegador');
+    el.classList.add('show');
+  } else {
+    el.classList.remove('show');
+  }
 }
 
 // ---------- team modality (dupla / quarteto) ----------
@@ -2573,8 +2604,49 @@ function salvarResultado(chaveId, gnum, novoResultado, opts){
       toast('Essa chave não existe mais');
       return;
     }
-    console.error('salvarResultado', err);
-    toast('Não deu pra salvar agora — vai sincronizar quando a internet voltar');
+    // Any other failure — a network blip, a temporarily unreachable server,
+    // etc. A transação can't be queued for offline retry: Firestore
+    // transactions need a live round trip and simply fail outright the
+    // instant the connection hiccups, even for a couple of seconds (this is
+    // documented Firestore behavior, not a bug on our side) — confirmed as
+    // the actual cause of the 15/08/2026 incidente, where placares looked
+    // saved on-screen (the optimistic local update above) but never reached
+    // the server, and the old message here ("vai sincronizar sozinho")
+    // wasn't true for this case, since nothing had been queued anywhere.
+    // Falling back to a plain field update instead DOES get queued by the
+    // SDK's own offline persistence and resolves itself once the connection
+    // is back — no extra retry loop needed on our side. This fallback skips
+    // the same-jogo conflict check (a rare simultaneous-edit collision is a
+    // much smaller risk than losing the placar outright).
+    console.error('salvarResultado (transação falhou, tentando gravação direta)', err);
+    return salvarResultadoDireto(chaveId, gnum, novoResultado, localChave, localBackup);
+  });
+}
+
+function salvarResultadoDireto(chaveId, gnum, novoResultado, localChave, localBackup){
+  const ref = fbDb.collection('chaves').doc(chaveId);
+  const update = {};
+  update['resultados.' + gnum] = Object.assign({}, novoResultado, {
+    lastEditedBy: (fbAuth.currentUser && fbAuth.currentUser.email) || null,
+    lastEditedAt: firebase.firestore.FieldValue.serverTimestamp()
+  });
+  update['andamento.' + gnum] = firebase.firestore.FieldValue.delete();
+  markSyncPending(1);
+  return ref.update(update).then(() => {
+    markSyncPending(-1);
+  }).catch(err => {
+    markSyncPending(-1);
+    console.error('salvarResultadoDireto', err);
+    // permission-denied/unauthenticated are PERMANENT — they will never
+    // resolve on their own (no amount of waiting fixes a login problem), so
+    // undo the optimistic update instead of leaving a placar on screen that
+    // was never actually saved anywhere, and say so plainly.
+    if(err && (err.code === 'permission-denied' || err.code === 'unauthenticated')){
+      if(localChave){ localChave.resultados = localBackup; renderChaveView(chaveId); }
+      toast('Sem permissão pra salvar — faça login de novo');
+      return;
+    }
+    toast('Ainda sem conexão com o servidor — vai tentar de novo sozinho em segundo plano');
   });
 }
 
