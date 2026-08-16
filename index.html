@@ -3004,9 +3004,23 @@ function computeTreeCanvas(chave){
     numCols = 1;
   } else {
     Object.assign(halfOf, halves.halfOf);
-    const principalGames = games.filter(g => halfOf[g.num] !== 'final' && bracketOf(g.num) !== 'repescagem' && bracketOf(g.num) !== 'crossover');
-    const crossoverGames = games.filter(g => halfOf[g.num] !== 'final' && bracketOf(g.num) === 'crossover');
-    const repescagemGames = games.filter(g => halfOf[g.num] !== 'final' && bracketOf(g.num) === 'repescagem');
+    // A semifinal (fase 'S/Final') always renders as the wide two-cell box in
+    // the shared center column (see renderTreeView), regardless of what
+    // computeBracketMeta's principal/repescagem/crossover classification says
+    // about it. For the cascading N>=8 format that classification always
+    // agrees (a semifinal pits one undefeated side against one touched side,
+    // i.e. 'crossover') — but for the small group-only formats (N=6/7,
+    // semis fed directly by {grp,pos} group standings on BOTH sides) neither
+    // side is "touched", so classify() calls it 'principal' like any other
+    // fresh-seed game. Trusting that classification put these semis in the
+    // narrow left column instead of the wide center one, sizing them for a
+    // 232px-wide slot when the box itself is 387px wide — the box ended up
+    // centered into negative left offsets, clipped off the canvas edge
+    // (reported by Ed as cut-off names/numbers on the N=6/7 tree).
+    const isCrossover = g => bracketOf(g.num) === 'crossover' || g.fase === 'S/Final';
+    const principalGames = games.filter(g => halfOf[g.num] !== 'final' && !isCrossover(g) && bracketOf(g.num) !== 'repescagem');
+    const crossoverGames = games.filter(g => halfOf[g.num] !== 'final' && isCrossover(g));
+    const repescagemGames = games.filter(g => halfOf[g.num] !== 'final' && !isCrossover(g) && bracketOf(g.num) === 'repescagem');
     const finalGames = games.filter(g => halfOf[g.num] === 'final');
 
     // LEFT: winners' chain, ascending by round.
@@ -3034,7 +3048,18 @@ function computeTreeCanvas(chave){
     const bottomGames = games.filter(g => halfOf[g.num] === 'bottom');
     const topL = layoutHalfRows(topGames, bm, roundOf);
     const bottomL = layoutHalfRows(bottomGames, bm, roundOf);
-    const gap = 2;
+    // Row-unit gap between the top and bottom halves. 2 units is plenty of
+    // real pixel room once a half has gone through a few rounds (its own
+    // row-stacking already pushes the semifinal well down), but for the
+    // small group-only formats (N=6/7) each half is just ONE row (the
+    // semifinal itself, no earlier rounds) — 2 units of gap (204px) minus
+    // the semifinal box's own height (128px) left only ~76px between the two
+    // semifinal boxes, not enough to fit the Final/3º-4º box (144px tall +
+    // margins) between them without genuinely overlapping one of them. 3
+    // units guarantees enough room for that box in every case that reaches
+    // this branch (semifinal boxes are always the deepest row here), and
+    // only adds harmless extra whitespace where 2 was already enough.
+    const gap = 3;
     const bottomOffset = topL.maxY + gap;
     Object.assign(yOf, topL.y);
     bottomGames.forEach(g => { yOf[g.num] = bottomL.y[g.num] + bottomOffset; });
