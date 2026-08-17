@@ -1994,15 +1994,13 @@ function renderPubChaveView(id){
   const pct = total ? Math.round((done/total)*100) : 0;
 
   // see renderChaveView for why group-phase games are combined into one
-  // list (in .num / play order) instead of separate per-group sections.
-  const order = [];
-  const byFase = {};
+  // list (in .num / play order) instead of separate per-group sections, and
+  // why the rest are grouped into CONTIGUOUS fase runs instead of merging
+  // every non-adjacent reuse of the same fase label into one section.
   const groupGames = [];
-  games.forEach(g => {
-    if(g.grupo){ groupGames.push(g); return; }
-    if(!byFase[g.fase]){ byFase[g.fase]=[]; order.push(g.fase); }
-    byFase[g.fase].push(g);
-  });
+  const nonGroupGames = [];
+  games.forEach(g => { (g.grupo ? groupGames : nonGroupGames).push(g); });
+  const runs = groupIntoContiguousFaseRuns(nonGroupGames);
 
   if(pubActiveTab[id] === undefined) pubActiveTab[id] = 'todas';
   const tab = pubActiveTab[id];
@@ -2052,11 +2050,11 @@ function renderPubChaveView(id){
     </div>`;
   })() : '';
 
-  const sections = groupSection + order.map(fase => {
-    const arr = byFase[fase];
+  const sections = groupSection + runs.map(run => {
+    const arr = run.arr;
     const doneCount = arr.filter(g => chave.resultados[g.num] && chave.resultados[g.num].vencedorSlot).length;
     return `<div class="phase-section">
-      <div class="phase-title"><span>${phaseLabel(fase)}</span><span class="count">${doneCount}/${arr.length}</span></div>
+      <div class="phase-title"><span>${phaseLabel(run.fase)}</span><span class="count">${doneCount}/${arr.length}</span></div>
       ${arr.map(g => renderPubMatchCard(chave, g)).join('')}
     </div>`;
   }).join('');
@@ -2473,6 +2471,28 @@ function categorySwitcherHtml(chaveId){
 }
 
 let activeTab = {};
+// Groups a num-ordered game list into CONTIGUOUS runs of the same fase
+// string, instead of merging every game that ever shares a fase label into
+// one bucket wherever it first appears. The official CBV-extracted tables
+// (brackets.json, restored as authoritative for most 8-26 sizes on
+// 16/08/2026) reuse a generic "GRUPO" fase label across many non-adjacent
+// rounds (e.g. n=17: jogos 1-9 are GRUPO, jogo 10 is a different fase, then
+// jogos 11-14 are GRUPO again) — grouping by first-appearance-of-fase pulled
+// ALL of those into a single section at the top of the list, scrambling the
+// real play order (jogo 10 ended up displayed after jogo 14 instead of
+// between 9 and 11). Starting a new section every time the fase actually
+// changes keeps the list in real .num order regardless of how many times a
+// label like "GRUPO" gets reused further down the table.
+function groupIntoContiguousFaseRuns(games){
+  const runs = [];
+  games.forEach(g => {
+    const last = runs[runs.length - 1];
+    if(last && last.fase === g.fase) last.arr.push(g);
+    else runs.push({ fase: g.fase, arr: [g] });
+  });
+  return runs;
+}
+
 function renderChaveView(id){
   const chave = getChave(id);
   if(!chave){ location.hash='/organizador'; return; }
@@ -2490,14 +2510,10 @@ function renderChaveView(id){
   // organizers the real play order (Grupo A jogo 1, Grupo B jogo 2, Grupo A
   // jogo 3, ...) with each card's own group chip, rather than every Grupo A
   // game bunched above every Grupo B game.
-  const order = [];
-  const byFase = {};
   const groupGames = [];
-  games.forEach(g => {
-    if(g.grupo){ groupGames.push(g); return; }
-    if(!byFase[g.fase]){ byFase[g.fase]=[]; order.push(g.fase); }
-    byFase[g.fase].push(g);
-  });
+  const nonGroupGames = [];
+  games.forEach(g => { (g.grupo ? groupGames : nonGroupGames).push(g); });
+  const runs = groupIntoContiguousFaseRuns(nonGroupGames);
 
   if(activeTab[id] === undefined) activeTab[id] = 'todas';
   const tab = activeTab[id];
@@ -2558,11 +2574,11 @@ function renderChaveView(id){
     </div>`;
   })() : '';
 
-  const sections = groupSection + order.map(fase => {
-    const arr = byFase[fase];
+  const sections = groupSection + runs.map(run => {
+    const arr = run.arr;
     const doneCount = arr.filter(g => chave.resultados[g.num] && chave.resultados[g.num].vencedorSlot).length;
     return `<div class="phase-section">
-      <div class="phase-title"><span>${phaseLabel(fase)}</span><span class="count">${doneCount}/${arr.length}</span></div>
+      <div class="phase-title"><span>${phaseLabel(run.fase)}</span><span class="count">${doneCount}/${arr.length}</span></div>
       ${arr.map(g => renderMatchCard(chave, g)).join('')}
     </div>`;
   }).join('');
