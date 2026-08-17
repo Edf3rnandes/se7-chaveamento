@@ -692,13 +692,32 @@ function buildDuplaCruzada(N){
   numerarBloco([final, terceiro]);
   return out;
 }
-// N=8 a 30 usam sempre o algoritmo genérico acima (substitui tanto as tabelas
-// extraídas da planilha quanto o antigo gerador de 27-30) — assim toda chave
-// de 8+ segue a mesma espinha de peixe espelhada, e o tamanho máximo dá pra
-// esticar só mudando esse limite.
-for(let n = 8; n <= 30; n++){
+// buildDuplaCruzada() generates a mathematically standard bracket seeding
+// (the textbook recursive 1-vs-2^N pattern: seed 1 always paired against the
+// theoretical bottom seed, 2 against the next, etc.) — that's NOT the same
+// pairing convention as the official CBV draw sheets extracted into
+// brackets.json for N=4,5,7-26 (confirmed against a real 17-duplas reference
+// sheet on 16/08/2026: the live game 1 was seed 16 x 17, but the official
+// sheet has seed 17 x 14, with seed 2 meeting seed 16 — a different,
+// non-formulaic seeding chart, not reproducible by a simple recursive rule).
+// brackets.json is authoritative for the sizes below where it passes every
+// structural check (double-elimination loss counts, no team playing after
+// its 2nd loss, ranking covering 1..N with no gaps) — confirmed against
+// N=17's real reference sheet, and N=11's too (matches the earlier
+// byte-for-byte audit). A handful of extracted sizes (15,19,20,24,25,26) did
+// NOT pass those checks — e.g. n=15 produces a final ranking position 16 in
+// a 15-team bracket, which is only possible if that table has a genuine
+// transcription error from however it was extracted originally. Those stay
+// on buildDuplaCruzada (self-consistent, even if its seeding convention
+// isn't the official one) until the real reference sheets for those sizes
+// can be checked and the extraction fixed — shipping a bracket where a team
+// keeps playing after being mathematically eliminated is worse than one
+// whose seed pairing doesn't match the federation's chart.
+const TABELA_OFICIAL_COM_PROBLEMA = new Set([15, 19, 20, 24, 25, 26]);
+for(let n = 27; n <= 30; n++){
   BRACKETS[n] = buildDuplaCruzada(n);
 }
+TABELA_OFICIAL_COM_PROBLEMA.forEach(n => { BRACKETS[n] = buildDuplaCruzada(n); });
 
 const SIZES = Object.keys(BRACKETS).map(Number).sort((a,b)=>a-b);
 
