@@ -352,19 +352,19 @@ input[type=number]{text-align:center;}
 .grade-table th, .grade-table td{ border:1px solid var(--border); padding:3px 6px; text-align:center; }
 .grade-table th{ background:#eef2f2; font-weight:800; color:var(--muted2); position:sticky; top:0; z-index:1; white-space:nowrap; }
 .grade-th-hora{ font-weight:800; background:#eef2f2; color:var(--muted2); position:sticky; left:0; z-index:2; white-space:nowrap; font-size:10px; }
-.planner-table th{ width:66px; min-width:66px; }
+.planner-table th{ width:80px; min-width:80px; }
 .planner-cell{
-  width:66px; min-width:66px; max-width:66px; vertical-align:middle; cursor:pointer;
-  padding:2px 3px !important; box-shadow:inset 0 0 0 1px rgba(255,255,255,.5);
+  width:80px; min-width:80px; max-width:80px; vertical-align:middle; cursor:pointer;
+  padding:3px 4px !important; box-shadow:inset 0 0 0 1px rgba(255,255,255,.5);
 }
 .planner-cell:active{ opacity:.8; }
 .planner-cell .planner-cat{
-  font-size:9px; font-weight:800; line-height:1.15; overflow:hidden; text-overflow:ellipsis;
+  font-size:9.5px; font-weight:800; line-height:1.2; overflow:hidden; text-overflow:ellipsis;
   white-space:nowrap;
 }
 .planner-cell .planner-fase{
-  font-size:8px; font-weight:600; opacity:.8; overflow:hidden; text-overflow:ellipsis;
-  white-space:nowrap; margin-top:1px;
+  font-size:8.5px; font-weight:700; opacity:.9; overflow:hidden; text-overflow:ellipsis;
+  white-space:nowrap; margin-top:2px; display:block;
 }
 .planner-cell.conflito{ outline:2px solid #d9534f; outline-offset:-2px; }
 
@@ -1604,14 +1604,28 @@ function gerarCronograma(ev, items, quadras, horaInicioStr){
       pc.pendentes.forEach(g => {
         const deps = gameDeps(pc.chave, g);
         if(deps.every(d => pc.fimDe[d] !== undefined)){
-          const earliest = deps.length ? Math.max(...deps.map(d => pc.fimDe[d])) : inicio;
-          prontos.push({ pc, g, earliest });
+          const depEarliest = deps.length ? Math.max(...deps.map(d => pc.fimDe[d])) : inicio;
+          prontos.push({ pc, g, depEarliest });
         }
       });
     });
     if(!prontos.length) break; // dependência não resolvida (não deveria acontecer) — sai pra não travar
-    prontos.sort((a,b) => (a.earliest - b.earliest) || (a.g.num - b.g.num));
-    prontos.forEach(({pc, g, earliest}) => {
+    prontos.sort((a,b) => (a.depEarliest - b.depEarliest) || (a.g.num - b.g.num));
+    prontos.forEach(({pc, g, depEarliest}) => {
+      let earliest = depEarliest;
+      // Fases finais (poucos jogos restantes numa categoria — quartas,
+      // repescagem, semifinal, final) nunca rodam mais de 2 jogos da MESMA
+      // categoria ao mesmo tempo, mesmo sobrando quadra livre — pedido do Ed:
+      // com menos de 4 jogos por distribuir, 3+ simultâneos "desconfigura a
+      // competição" (essas fases só comportam 2 de verdade). O limite some
+      // assim que sobrarem 4+ jogos daquela categoria (cobre quartas com 4
+      // jogos em paralelo, por exemplo). slots já reflete o que foi agendado
+      // nesta mesma leva até aqui, então também serializa candidatos que
+      // ficaram prontos juntos.
+      if(pc.pendentes.length < 4){
+        const finsDesc = slots.filter(s => s.chaveId === pc.chave.id).map(s => s.fim).sort((a,b) => b-a);
+        if(finsDesc.length >= 2) earliest = Math.max(earliest, finsDesc[1]);
+      }
       let idx = 0;
       for(let i=1;i<quadraFreeAt.length;i++) if(quadraFreeAt[i] < quadraFreeAt[idx]) idx = i;
       const startAt = Math.max(quadraFreeAt[idx], earliest);
@@ -2913,6 +2927,17 @@ function renderCronograma(eventoId, dia){
     </div>`;
 }
 function renderCronogramaPlanner(eventoId, dia, ev, dc, items){
+  // Resumo por categoria (times + total de jogos) — pedido do Ed pra ter uma
+  // base de referência antes de olhar a grade em si.
+  const resumo = `<div class="card">
+    <div class="card-title" style="margin-bottom:4px;">Times e jogos por categoria</div>
+    ${items.map(({chave}) => `
+      <div style="display:flex; justify-content:space-between; gap:8px; padding:5px 0; border-bottom:1px solid var(--border); font-size:13px;">
+        <span style="font-weight:600;">${escapeHtml(chave.nome)}</span>
+        <span class="hint" style="margin:0; white-space:nowrap;">${chave.numTimes} ${chave.modalidade==='quarteto'?'times':'duplas'} · ${effectiveGames(chave).length} jogos</span>
+      </div>`).join('')}
+  </div>`;
+
   const evForCalc = Object.assign({}, ev, { duracaoPadrao: ev.duracaoPadrao||30, duracaoDecisiva: ev.duracaoDecisiva||40 });
   const base = gerarCronograma(evForCalc, items, dc.quadras, dc.horaInicio);
   const slots = applyCronogramaOverrides(ev, dia, base.slots);
@@ -2921,13 +2946,13 @@ function renderCronogramaPlanner(eventoId, dia, ev, dc, items){
   const fimMin = slots.length ? Math.max(...slots.map(s=>s.fim)) : (hhmmToMin(dc.horaInicio) || 0);
   const feasibility = limiteMin != null
     ? (fimMin <= limiteMin
-        ? `<div class="section-note" style="background:var(--success-bg); color:var(--success); font-weight:600;">✅ Cabe no horário — previsão de término ${minToHHMM(fimMin)}, ${minToHHMM(limiteMin-fimMin)} de folga antes do limite (${dc.horaLimite}).</div>`
-        : `<div class="section-note" style="background:#fbeaea; color:#b13a3a; font-weight:600;">⚠️ Não cabe no horário limite — previsão de término ${minToHHMM(fimMin)}, ${fimMin-limiteMin} min além do limite (${dc.horaLimite}). Considere mais quadras, reduzir a duração dos jogos, ou tirar alguma categoria desse dia.</div>`)
-    : `<div class="section-note">Previsão de término: <strong>${minToHHMM(fimMin)}</strong> (defina um horário limite acima pra saber se cabe).</div>`;
+        ? `<div class="section-note" style="background:var(--success-bg); color:var(--success); font-weight:600; margin-top:10px;">✅ Cabe no horário — previsão de término ${minToHHMM(fimMin)}, ${minToHHMM(limiteMin-fimMin)} de folga antes do limite (${dc.horaLimite}).</div>`
+        : `<div class="section-note" style="background:#fbeaea; color:#b13a3a; font-weight:600; margin-top:10px;">⚠️ Não cabe no horário limite — previsão de término ${minToHHMM(fimMin)}, ${fimMin-limiteMin} min além do limite (${dc.horaLimite}). Considere mais quadras, reduzir a duração dos jogos, ou tirar alguma categoria desse dia.</div>`)
+    : `<div class="section-note" style="margin-top:10px;">Previsão de término: <strong>${minToHHMM(fimMin)}</strong> (defina um horário limite acima pra saber se cabe).</div>`;
   const conflitoAviso = conflitos.size ? `<div class="section-note" style="background:#fbeaea; color:#b13a3a; font-weight:600; margin-top:6px;">⚠️ ${conflitos.size} jogo${conflitos.size===1?'':'s'} com conflito de horário/quadra depois de ajustes manuais.</div>` : '';
 
   if(!slots.length){
-    return `${feasibility}<div class="hint" style="margin-top:10px;">Nenhum jogo pra mostrar ainda.</div>`;
+    return `${resumo}${feasibility}<div class="hint" style="margin-top:10px;">Nenhum jogo pra mostrar ainda.</div>`;
   }
 
   const inicioMin = hhmmToMin(dc.horaInicio) || 8*60;
@@ -2949,15 +2974,15 @@ function renderCronogramaPlanner(eventoId, dia, ev, dc, items){
       coveredUntil[i] = s.fim;
       const cor = corMap[s.categoria];
       const isConflito = conflitos.has(s.chaveId + '|' + s.gnum);
-      cells += `<td rowspan="${span}" class="planner-cell${isConflito?' conflito':''}" style="background:${cor[0]}; color:${cor[1]};" onclick="editGradeCell('${eventoId}','${dia}','${s.chaveId}',${s.gnum},${s.quadraIdx},'${minToHHMM(s.inicio)}')" title="${escapeHtmlAttr(s.categoria)} — ${escapeHtmlAttr(s.fase)}${s.manual?' (ajustado manualmente)':''}">
+      cells += `<td rowspan="${span}" class="planner-cell${isConflito?' conflito':''}" style="background:${cor[0]}; color:${cor[1]};" onclick="editGradeCell('${eventoId}','${dia}','${s.chaveId}',${s.gnum},${s.quadraIdx},'${minToHHMM(s.inicio)}')" title="${escapeHtmlAttr(s.categoria)} — Jogo ${s.gnum} · ${escapeHtmlAttr(s.fase)}${s.manual?' (ajustado manualmente)':''}">
         <div class="planner-cat">${escapeHtml(s.categoria)}</div>
-        <div class="planner-fase">${escapeHtml(s.fase)}</div>
+        <div class="planner-fase">#${s.gnum} · ${escapeHtml(s.fase)}</div>
       </td>`;
     }
     return `<tr><td class="grade-th-hora">${minToHHMM(t)}</td>${cells}</tr>`;
   }).join('');
 
-  return `${feasibility}${conflitoAviso}
+  return `${resumo}${feasibility}${conflitoAviso}
     <div class="hint" style="margin:8px 0;">Toque num jogo na grade pra ajustar horário/quadra manualmente.</div>
     <button class="btn ghost small" style="margin-bottom:10px;" onclick="exportCronogramaPDF('${eventoId}','${dia}')">📄 Exportar PDF</button>
     <div style="overflow-x:auto;"><table class="grade-table planner-table"><thead>${headRow}</thead><tbody>${bodyRows}</tbody></table></div>`;
