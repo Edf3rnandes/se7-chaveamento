@@ -4046,7 +4046,21 @@ function renderTreeView(chave, readOnly){
   const finalGap = Math.round(cardW * 0.5);
   const centerColW = Math.max(semiW, finalW * 2 + finalGap) + 40;
   const hasCenter = crossoverCol !== null;
-  function colWidthAt(c){ return (hasCenter && c === crossoverCol) ? centerColW : colW; }
+  // Whichever column ends up holding BOTH the Final and the 3º/4º box side
+  // by side needs the same extra-wide treatment as the semifinal's center
+  // column — not just when there's a two-semifinal halves structure feeding
+  // it. The small group-only formats with disputa3 on (N=4/5: Final AND
+  // 3º/4º, both fed straight off group standings, no semifinals at all —
+  // computeTreeHalves bails out for these, so hasCenter/crossoverCol are
+  // never set) still land both boxes in the same lone column, and a plain
+  // 232px column is nowhere near enough for two ~230px-wide boxes side by
+  // side — the pair got centered on a column too narrow for them and the
+  // Final box landed at a large negative offset, off the left edge of the
+  // canvas (reported by Ed as the tree showing just a cut-off sliver).
+  const finalPairGame = games.find(g => g.fase === 'Final');
+  const hasFinalPair = !!finalPairGame && games.some(g => g.fase === '3º/4º');
+  const finalPairCol = hasFinalPair ? posOf[finalPairGame.num].col : null;
+  function colWidthAt(c){ return (c === crossoverCol && hasCenter) || c === finalPairCol ? centerColW : colW; }
   const colX = [0];
   for(let c = 0; c < numCols; c++) colX.push(colX[c] + colWidthAt(c));
   function centeredLeft(c, w){ return colX[c] + (colWidthAt(c) - w) / 2; }
@@ -4091,13 +4105,29 @@ function renderTreeView(chave, readOnly){
   // Second pass: Final/3º-4º, vertically centered in the real pixel gap
   // between the two semifinal boxes (spec §7.2), side by side within that
   // row (§7.2 horizontal layout unchanged).
+  //
+  // That side-by-side offset (centerX ± finalGap/2) only makes sense when
+  // BOTH boxes actually exist and get centered as a pair — it assumes the
+  // Final sits centerGap to the LEFT of center because the 3º/4º is sitting
+  // centerGap to the RIGHT balancing it out. Whenever only one of the two is
+  // present (N=3 never has a 3º/4º game at all — 3rd place comes straight
+  // from the group average per spec; and any size where the organizador
+  // turned "disputar 3º lugar" off has effectiveGames() strip the 3º/4º game
+  // out), the lone Final box still got shifted by that same half-gap offset
+  // as if its absent partner were still there, landing it partway or fully
+  // off the left edge of the canvas — reported by Ed as the tree showing
+  // just a sliver of a cut-off box. A lone Final/3º-4º box centers on the
+  // column instead, using the same centeredLeft() helper every other card
+  // uses.
   const semiTopGame = games.find(g => g.fase === 'S/Final' && halfOf[g.num] === 'top');
   const semiBottomGame = games.find(g => g.fase === 'S/Final' && halfOf[g.num] === 'bottom');
   games.forEach(g => {
     if(g.fase !== 'Final' && g.fase !== '3º/4º') return;
     const col = posOf[g.num].col;
     const centerX = colX[col] + colWidthAt(col) / 2;
-    const l = g.fase === 'Final' ? (centerX - finalGap / 2 - finalW) : (centerX + finalGap / 2);
+    const l = !hasFinalPair
+      ? centeredLeft(col, finalW)
+      : (g.fase === 'Final' ? (centerX - finalGap / 2 - finalW) : (centerX + finalGap / 2));
     let topPx;
     if(hasCenter && semiTopGame && semiBottomGame && geom[semiTopGame.num] && geom[semiBottomGame.num]){
       const bandTop = geom[semiTopGame.num].top + geom[semiTopGame.num].height;
