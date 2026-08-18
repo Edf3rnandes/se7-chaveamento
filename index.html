@@ -2035,8 +2035,8 @@ function renderEventoView(eventoId, selectedDia){
   app.innerHTML = `
     ${header(escapeHtml(ev.nome) + (publicado ? '' : ' <span class="rascunho-badge">RASCUNHO</span>'), ev.edicao ? escapeHtml(ev.edicao) : null, '/organizador', publishRow)}
     <div class="wrap">
+      <button class="btn secondary" style="margin-bottom:14px; width:100%;" onclick="location.hash='/cronograma/${eventoId}/'+encodeURIComponent('${dia}')">🗓️ Cronograma de quadras</button>
       ${dayTabs}
-      <button class="btn secondary" style="margin:8px 0 14px; width:100%;" onclick="location.hash='/cronograma/${eventoId}/'+encodeURIComponent('${dia}')">🗓️ Cronograma de quadras — ${formatDiaLabelFull(dia)}</button>
       ${body}
       <button class="btn accent" style="margin-top:6px;" onclick="location.hash='/nova-categoria/${eventoId}/'+encodeURIComponent('${dia}')">+ Nova categoria</button>
       <button class="btn ghost" style="margin-top:8px;" onclick="location.hash='/importar-lista/${eventoId}/'+encodeURIComponent('${dia}')">📥 Importar lista completa (todas as categorias)</button>
@@ -2898,6 +2898,13 @@ function renderCronograma(eventoId, dia){
   const items = categoriasOfDia(eventoId, dia);
   const backHash = '/evento/' + eventoId + '/' + encodeURIComponent(dia);
 
+  // Troca de dia direto aqui dentro do cronograma — pedido do Ed pra não
+  // precisar voltar pra tela do evento só pra ver o cronograma de outro dia.
+  const dias = diasOfEvento(ev);
+  const dayTabs = dias.length > 1 ? `<div class="tabs" style="overflow-x:auto;">
+    ${dias.map(d => `<div class="tab ${d===dia?'active':''}" onclick="location.hash='/cronograma/${eventoId}/'+encodeURIComponent('${d}')">${formatDiaLabelFull(d)}</div>`).join('')}
+  </div>` : '';
+
   const configCard = `<div class="card">
     <label>Quadras disponíveis nesse dia</label>
     <input type="number" min="1" step="1" value="${dc.quadras||''}" placeholder="ex: 9" oninput="setDiaConfig('${eventoId}','${dia}',{quadras:parseInt(this.value,10)||0}); renderCronograma('${eventoId}','${dia}')">
@@ -2935,6 +2942,7 @@ function renderCronograma(eventoId, dia){
   app.innerHTML = `
     ${header('Cronograma', escapeHtml(ev.nome) + ' • ' + formatDiaLabel(dia), backHash)}
     <div class="wrap">
+      ${dayTabs}
       ${configCard}
       ${body}
     </div>`;
