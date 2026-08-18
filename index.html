@@ -2036,10 +2036,10 @@ function renderEventoView(eventoId, selectedDia){
     ${header(escapeHtml(ev.nome) + (publicado ? '' : ' <span class="rascunho-badge">RASCUNHO</span>'), ev.edicao ? escapeHtml(ev.edicao) : null, '/organizador', publishRow)}
     <div class="wrap">
       ${dayTabs}
+      <button class="btn secondary" style="margin:8px 0 14px; width:100%;" onclick="location.hash='/cronograma/${eventoId}/'+encodeURIComponent('${dia}')">🗓️ Cronograma de quadras — ${formatDiaLabelFull(dia)}</button>
       ${body}
       <button class="btn accent" style="margin-top:6px;" onclick="location.hash='/nova-categoria/${eventoId}/'+encodeURIComponent('${dia}')">+ Nova categoria</button>
       <button class="btn ghost" style="margin-top:8px;" onclick="location.hash='/importar-lista/${eventoId}/'+encodeURIComponent('${dia}')">📥 Importar lista completa (todas as categorias)</button>
-      <button class="btn secondary" style="margin-top:8px;" onclick="location.hash='/cronograma/${eventoId}/'+encodeURIComponent('${dia}')">🗓️ Cronograma de quadras</button>
     </div>`;
 }
 function togglePublicarEvento(id){
