@@ -352,21 +352,19 @@ input[type=number]{text-align:center;}
 .grade-table th, .grade-table td{ border:1px solid var(--border); padding:3px 6px; text-align:center; }
 .grade-table th{ background:#eef2f2; font-weight:800; color:var(--muted2); position:sticky; top:0; z-index:1; white-space:nowrap; }
 .grade-th-hora{ font-weight:800; background:#eef2f2; color:var(--muted2); position:sticky; left:0; z-index:2; white-space:nowrap; font-size:10px; }
-.planner-table th{ width:80px; min-width:80px; }
+.planner-table th{ width:132px; min-width:132px; }
 .planner-cell{
-  width:80px; min-width:80px; max-width:80px; vertical-align:middle; cursor:pointer;
-  padding:3px 4px !important; box-shadow:inset 0 0 0 1px rgba(255,255,255,.5);
+  width:132px; min-width:132px; max-width:132px; height:34px; vertical-align:middle;
+  padding:3px 7px !important; box-shadow:inset 0 0 0 1px rgba(255,255,255,.5);
 }
-.planner-cell:active{ opacity:.8; }
 .planner-cell .planner-cat{
-  font-size:9.5px; font-weight:800; line-height:1.2; overflow:hidden; text-overflow:ellipsis;
+  font-size:10.5px; font-weight:800; line-height:1.25; overflow:hidden; text-overflow:ellipsis;
   white-space:nowrap;
 }
 .planner-cell .planner-fase{
-  font-size:8.5px; font-weight:700; opacity:.9; overflow:hidden; text-overflow:ellipsis;
+  font-size:9.5px; font-weight:700; opacity:.9; overflow:hidden; text-overflow:ellipsis;
   white-space:nowrap; margin-top:2px; display:block;
 }
-.planner-cell.conflito{ outline:2px solid #d9534f; outline-offset:-2px; }
 
 /* foto do evento */
 .evento-photo{width:100%; height:130px; object-fit:cover; border-radius:12px; margin-bottom:10px; display:block; background:#eef2f2;}
@@ -1640,9 +1638,56 @@ function gerarCronograma(ev, items, quadras, horaInicioStr){
   const fimMin = slots.length ? Math.max(...slots.map(s=>s.fim)) : inicio;
   return { slots, fimMin, ok:true };
 }
+// ---------- grade por categoria (quadras dedicadas) ----------
+// Modelo pedido pelo Ed depois de ver os jogos "misturados" livremente pela
+// mesma quadra (categoria A num horário, categoria B no seguinte, categoria
+// A de novo): cada categoria reserva um número FIXO de quadras só pra ela
+// (editável — quantas quadras + que horas começa), nunca dividindo a mesma
+// quadra com outra categoria ao mesmo tempo. Dentro do bloco de quadras
+// escolhido pra uma categoria, os jogos INDIVIDUAIS dela (respeitando
+// dependência e o limite de 2 simultâneos nas fases finais) são posicionados
+// simulando aquela chave sozinha, com gerarCronograma, só nas quadras
+// escolhidas — depois os índices de quadra "virtuais" da simulação são
+// remapeados pros índices REAIS escolhidos. Devolve uma lista achatada de
+// jogos (mesmo formato de gerarCronograma().slots), pronta pra desenhar a
+// grade com uma célula pequena por partida.
+function gerarGradeDia(ev, items, quadrasTotais, horaInicioDiaStr){
+  const inicioDia = hhmmToMin(horaInicioDiaStr) ?? 8*60;
+  if(!quadrasTotais || quadrasTotais < 1) return { jogos: [], fimMin: inicioDia };
+  const quadraFreeAt = Array(quadrasTotais).fill(inicioDia);
+  // categorias entram na ordem do horário que cada uma pediu (em branco =
+  // começa assim que possível), com empate por nome
+  const ordenado = items.slice().sort((a,b) => {
+    const ta = hhmmToMin(a.cat.horaInicio) ?? inicioDia;
+    const tb = hhmmToMin(b.cat.horaInicio) ?? inicioDia;
+    return (ta - tb) || a.chave.nome.localeCompare(b.chave.nome, 'pt-BR', { sensitivity:'base' });
+  });
+  const jogos = [];
+  ordenado.forEach(({cat, chave}) => {
+    const desiredN = Math.max(1, Math.min(cat.quadras || 1, quadrasTotais));
+    const desiredStart = Math.max(inicioDia, hhmmToMin(cat.horaInicio) ?? inicioDia);
+    // escolhe as N quadras que ficam livres mais cedo
+    const porQuadra = quadraFreeAt.map((t,i) => ({ i, t })).sort((a,b) => (a.t-b.t) || (a.i-b.i));
+    const escolhidas = porQuadra.slice(0, desiredN).map(x => x.i).sort((a,b) => a-b);
+    const earliestReady = Math.max(desiredStart, ...escolhidas.map(i => quadraFreeAt[i]));
+    // simula essa chave sozinha, com N quadras "virtuais" só dela
+    const sim = gerarCronograma(ev, [{ cat, chave }], desiredN, minToHHMM(earliestReady));
+    sim.slots.forEach(s => { jogos.push(Object.assign({}, s, { quadraIdx: escolhidas[s.quadraIdx] })); });
+    const fim = sim.slots.length ? Math.max(...sim.slots.map(s => s.fim)) : earliestReady;
+    escolhidas.forEach(i => { quadraFreeAt[i] = fim; });
+  });
+  const fimMin = jogos.length ? Math.max(...jogos.map(j => j.fim)) : inicioDia;
+  return { jogos, fimMin };
+}
+function setCategoriaConfig(catId, patch){
+  const cat = getCategoria(catId);
+  if(!cat) return;
+  Object.assign(cat, patch);
+  updateCategoria(cat);
+}
 function getDiaConfig(ev, data){
   const c = (ev.diasConfig && ev.diasConfig[data]) || {};
-  return { quadras: c.quadras || 0, horaInicio: c.horaInicio || '08:00', horaLimite: c.horaLimite || '', overrides: c.overrides || {} };
+  return { quadras: c.quadras || 0, horaInicio: c.horaInicio || '08:00', horaLimite: c.horaLimite || '' };
 }
 function setDiaConfig(eventoId, data, patch){
   const ev = getEvento(eventoId);
@@ -1657,38 +1702,6 @@ function setEventoDuracao(eventoId, field, value){
   const n = parseInt(value, 10);
   ev[field] = isNaN(n) ? undefined : n;
   updateEvento(ev);
-}
-// Aplica os ajustes manuais (feitos direto na tela do cronograma) por cima
-// do horário/quadra calculados automaticamente — o organizador pode mover
-// um jogo específico (ex: separar dois jogos de irmãos que caíram no mesmo
-// horário) sem precisar reconfigurar tudo.
-function applyCronogramaOverrides(ev, data, slots){
-  const overrides = getDiaConfig(ev, data).overrides;
-  return slots.map(s => {
-    const ov = overrides[s.chaveId + '|' + s.gnum];
-    if(!ov) return Object.assign({}, s, { manual:false });
-    const dur = s.fim - s.inicio;
-    const inicio = ov.inicio != null ? (hhmmToMin(ov.inicio) ?? s.inicio) : s.inicio;
-    const quadraIdx = ov.quadraIdx != null ? ov.quadraIdx : s.quadraIdx;
-    return Object.assign({}, s, { inicio, fim: inicio + dur, quadraIdx, manual:true });
-  });
-}
-// Depois de aplicar os ajustes manuais, dois jogos podem acabar sobrepostos
-// na mesma quadra — marca esses casos pra avisar visualmente na tela.
-function detectConflitos(slots){
-  const byQuadra = {};
-  slots.forEach(s => { (byQuadra[s.quadraIdx] = byQuadra[s.quadraIdx] || []).push(s); });
-  const conflitos = new Set();
-  Object.values(byQuadra).forEach(arr => {
-    arr.sort((a,b) => a.inicio - b.inicio);
-    for(let i=1; i<arr.length; i++){
-      if(arr[i].inicio < arr[i-1].fim){
-        conflitos.add(arr[i].chaveId + '|' + arr[i].gnum);
-        conflitos.add(arr[i-1].chaveId + '|' + arr[i-1].gnum);
-      }
-    }
-  });
-  return conflitos;
 }
 // Paleta fixa (fundo claro + texto escuro correspondente) — mais previsível e
 // bonita na tela e no PDF do que gerar cor por hash do nome. Usada pra
@@ -2872,11 +2885,12 @@ function confirmarImportLista(){
 }
 
 // ---------- tela do cronograma ----------
-// Formato "planner" pedido pelo Ed com uma planilha de referência em mãos:
-// quadras nas colunas, horário nas linhas, um retângulo pequeno por JOGO
-// (não por categoria inteira) mostrando categoria + fase, colorido, ocupando
-// (via rowspan) só as linhas que aquele jogo realmente dura. Toca no jogo
-// pra ajustar manualmente horário/quadra.
+// Modelo pedido pelo Ed: cada categoria tem quadras DEDICADAS (ele define
+// quantas quadras e a que horas cada categoria começa, igual a planilha que
+// ele já usava), sem misturar categorias diferentes na mesma quadra. Dentro
+// da faixa de quadras de uma categoria, cada JOGO individual aparece como um
+// retângulo pequeno (categoria + fase + número do jogo), com rowspan só nas
+// linhas que aquele jogo realmente ocupa.
 function renderCronograma(eventoId, dia){
   const ev = getEvento(eventoId);
   if(!ev){ location.hash = '/organizador'; return; }
@@ -2907,7 +2921,6 @@ function renderCronograma(eventoId, dia){
         <input type="number" min="5" step="5" value="${ev.duracaoDecisiva||40}" oninput="setEventoDuracao('${eventoId}','duracaoDecisiva',this.value); renderCronograma('${eventoId}','${dia}')">
       </div>
     </div>
-    <div class="hint" style="margin-top:6px;">A ordem respeita a chave — um jogo só entra no horário depois que os jogos dos quais ele depende já tiverem, na simulação, terminado.</div>
   </div>`;
 
   let body;
@@ -2927,32 +2940,42 @@ function renderCronograma(eventoId, dia){
     </div>`;
 }
 function renderCronogramaPlanner(eventoId, dia, ev, dc, items){
-  // Resumo por categoria (times + total de jogos) — pedido do Ed pra ter uma
-  // base de referência antes de olhar a grade em si.
-  const resumo = `<div class="card">
-    <div class="card-title" style="margin-bottom:4px;">Times e jogos por categoria</div>
-    ${items.map(({chave}) => `
-      <div style="display:flex; justify-content:space-between; gap:8px; padding:5px 0; border-bottom:1px solid var(--border); font-size:13px;">
-        <span style="font-weight:600;">${escapeHtml(chave.nome)}</span>
-        <span class="hint" style="margin:0; white-space:nowrap;">${chave.numTimes} ${chave.modalidade==='quarteto'?'times':'duplas'} · ${effectiveGames(chave).length} jogos</span>
+  // Painel único: pra cada categoria, times + jogos (referência) e os dois
+  // campos editáveis que definem a quadra dedicada — quantas quadras e que
+  // horas ela começa. É exatamente o que o Ed pediu: "saber quantos jogos
+  // tem e quantos times estão, e eu fazer a definição aqui da quantidade de
+  // quadras pra aquela categoria, que horas ela inicia".
+  const configCategorias = `<div class="card">
+    <div class="card-title" style="margin-bottom:4px;">Quadras por categoria</div>
+    <div class="hint" style="margin:0 0 8px;">Cada categoria ocupa suas próprias quadras — os jogos dela não se misturam com os de outra categoria.</div>
+    ${items.map(({cat, chave}) => `
+      <div style="display:flex; align-items:center; gap:8px; padding:8px 0; border-bottom:1px solid var(--border); flex-wrap:wrap;">
+        <div style="flex:1; min-width:140px;">
+          <div style="font-weight:700; font-size:13px;">${escapeHtml(chave.nome)}</div>
+          <div class="hint" style="margin:0;">${chave.numTimes} ${chave.modalidade==='quarteto'?'times':'duplas'} · ${effectiveGames(chave).length} jogos</div>
+        </div>
+        <div style="width:78px;">
+          <label style="font-size:10px;">Quadras</label>
+          <input type="number" min="1" step="1" value="${cat.quadras||1}" oninput="setCategoriaConfig('${cat.id}',{quadras:Math.max(1,parseInt(this.value,10)||1)}); renderCronograma('${eventoId}','${dia}')">
+        </div>
+        <div style="width:110px;">
+          <label style="font-size:10px;">Início</label>
+          <input type="time" value="${escapeHtmlAttr(cat.horaInicio||dc.horaInicio)}" oninput="setCategoriaConfig('${cat.id}',{horaInicio:this.value}); renderCronograma('${eventoId}','${dia}')">
+        </div>
       </div>`).join('')}
   </div>`;
 
   const evForCalc = Object.assign({}, ev, { duracaoPadrao: ev.duracaoPadrao||30, duracaoDecisiva: ev.duracaoDecisiva||40 });
-  const base = gerarCronograma(evForCalc, items, dc.quadras, dc.horaInicio);
-  const slots = applyCronogramaOverrides(ev, dia, base.slots);
-  const conflitos = detectConflitos(slots);
+  const { jogos, fimMin } = gerarGradeDia(evForCalc, items, dc.quadras, dc.horaInicio);
   const limiteMin = dc.horaLimite ? hhmmToMin(dc.horaLimite) : null;
-  const fimMin = slots.length ? Math.max(...slots.map(s=>s.fim)) : (hhmmToMin(dc.horaInicio) || 0);
   const feasibility = limiteMin != null
     ? (fimMin <= limiteMin
         ? `<div class="section-note" style="background:var(--success-bg); color:var(--success); font-weight:600; margin-top:10px;">✅ Cabe no horário — previsão de término ${minToHHMM(fimMin)}, ${minToHHMM(limiteMin-fimMin)} de folga antes do limite (${dc.horaLimite}).</div>`
         : `<div class="section-note" style="background:#fbeaea; color:#b13a3a; font-weight:600; margin-top:10px;">⚠️ Não cabe no horário limite — previsão de término ${minToHHMM(fimMin)}, ${fimMin-limiteMin} min além do limite (${dc.horaLimite}). Considere mais quadras, reduzir a duração dos jogos, ou tirar alguma categoria desse dia.</div>`)
     : `<div class="section-note" style="margin-top:10px;">Previsão de término: <strong>${minToHHMM(fimMin)}</strong> (defina um horário limite acima pra saber se cabe).</div>`;
-  const conflitoAviso = conflitos.size ? `<div class="section-note" style="background:#fbeaea; color:#b13a3a; font-weight:600; margin-top:6px;">⚠️ ${conflitos.size} jogo${conflitos.size===1?'':'s'} com conflito de horário/quadra depois de ajustes manuais.</div>` : '';
 
-  if(!slots.length){
-    return `${resumo}${feasibility}<div class="hint" style="margin-top:10px;">Nenhum jogo pra mostrar ainda.</div>`;
+  if(!jogos.length){
+    return `${configCategorias}${feasibility}<div class="hint" style="margin-top:10px;">Nenhum jogo pra mostrar ainda.</div>`;
   }
 
   const inicioMin = hhmmToMin(dc.horaInicio) || 8*60;
@@ -2960,7 +2983,7 @@ function renderCronogramaPlanner(eventoId, dia, ev, dc, items){
   const fimGrade = Math.ceil(fimMin/step)*step;
   const linhas = [];
   for(let t = inicioMin; t < fimGrade; t += step) linhas.push(t);
-  const corMap = corMapCategorias(slots);
+  const corMap = corMapCategorias(jogos);
 
   const headRow = `<tr><th class="grade-th-hora">Horário</th>${Array.from({length:dc.quadras}, (_,i)=>`<th>Quadra ${i+1}</th>`).join('')}</tr>`;
   const coveredUntil = Array(dc.quadras).fill(inicioMin);
@@ -2968,13 +2991,12 @@ function renderCronogramaPlanner(eventoId, dia, ev, dc, items){
     let cells = '';
     for(let i=0; i<dc.quadras; i++){
       if(t < coveredUntil[i]) continue; // já coberto pelo rowspan de uma linha anterior
-      const s = slots.find(x => x.quadraIdx === i && x.inicio === t);
+      const s = jogos.find(x => x.quadraIdx === i && x.inicio === t);
       if(!s){ cells += `<td></td>`; continue; }
       const span = Math.max(1, Math.round((s.fim - s.inicio) / step));
       coveredUntil[i] = s.fim;
       const cor = corMap[s.categoria];
-      const isConflito = conflitos.has(s.chaveId + '|' + s.gnum);
-      cells += `<td rowspan="${span}" class="planner-cell${isConflito?' conflito':''}" style="background:${cor[0]}; color:${cor[1]};" onclick="editGradeCell('${eventoId}','${dia}','${s.chaveId}',${s.gnum},${s.quadraIdx},'${minToHHMM(s.inicio)}')" title="${escapeHtmlAttr(s.categoria)} — Jogo ${s.gnum} · ${escapeHtmlAttr(s.fase)}${s.manual?' (ajustado manualmente)':''}">
+      cells += `<td rowspan="${span}" class="planner-cell" style="background:${cor[0]}; color:${cor[1]};" title="${escapeHtmlAttr(s.categoria)} — Jogo ${s.gnum} · ${escapeHtmlAttr(s.fase)}">
         <div class="planner-cat">${escapeHtml(s.categoria)}</div>
         <div class="planner-fase">#${s.gnum} · ${escapeHtml(s.fase)}</div>
       </td>`;
@@ -2982,44 +3004,15 @@ function renderCronogramaPlanner(eventoId, dia, ev, dc, items){
     return `<tr><td class="grade-th-hora">${minToHHMM(t)}</td>${cells}</tr>`;
   }).join('');
 
-  return `${resumo}${feasibility}${conflitoAviso}
-    <div class="hint" style="margin:8px 0;">Toque num jogo na grade pra ajustar horário/quadra manualmente.</div>
-    <button class="btn ghost small" style="margin-bottom:10px;" onclick="exportCronogramaPDF('${eventoId}','${dia}')">📄 Exportar PDF</button>
-    <div style="overflow-x:auto;"><table class="grade-table planner-table"><thead>${headRow}</thead><tbody>${bodyRows}</tbody></table></div>`;
+  return `${configCategorias}${feasibility}
+    <div style="display:flex; gap:8px; margin:10px 0; flex-wrap:wrap;">
+      <button class="btn ghost small" onclick="exportCronogramaPDF('${eventoId}','${dia}')">📄 PDF (este dia)</button>
+      <button class="btn ghost small" onclick="exportCronogramaTodosDiasPDF('${eventoId}')">📚 PDF (todos os dias)</button>
+      <button class="btn ghost small" onclick="exportCronogramaImagem('${eventoId}','${dia}')">🖼️ Exportar imagem</button>
+    </div>
+    <div style="overflow-x:auto;"><table id="grade-table-${cssId(dia)}" class="grade-table planner-table"><thead>${headRow}</thead><tbody>${bodyRows}</tbody></table></div>`;
 }
-function editGradeCell(eventoId, dia, chaveId, gnum, quadraIdxAtual, horaAtual){
-  const novaHora = prompt('Novo horário (HH:MM):', horaAtual);
-  if(novaHora === null) return;
-  if(!/^\d{1,2}:\d{2}$/.test(novaHora.trim())){ toast('Horário inválido — use HH:MM'); return; }
-  onCronogramaOverride(eventoId, dia, chaveId, gnum, 'inicio', novaHora.trim());
-  const novaQuadra = prompt('Nova quadra (número):', String(quadraIdxAtual + 1));
-  if(novaQuadra === null) return;
-  const n = parseInt(novaQuadra, 10);
-  if(!n || n < 1){ toast('Quadra inválida'); return; }
-  onCronogramaOverride(eventoId, dia, chaveId, gnum, 'quadraIdx', String(n - 1));
-}
-function onCronogramaOverride(eventoId, data, chaveId, gnum, field, value){
-  const ev = getEvento(eventoId);
-  if(!ev) return;
-  const dc = getDiaConfig(ev, data);
-  const key = chaveId + '|' + gnum;
-  const cur = Object.assign({}, dc.overrides[key]);
-  if(field === 'quadraIdx') cur.quadraIdx = parseInt(value, 10);
-  else if(field === 'inicio') cur.inicio = value;
-  const overrides = Object.assign({}, dc.overrides);
-  overrides[key] = cur;
-  setDiaConfig(eventoId, data, { overrides });
-  renderCronograma(eventoId, data);
-}
-function revertCronogramaOverride(eventoId, data, chaveId, gnum){
-  const ev = getEvento(eventoId);
-  if(!ev) return;
-  const dc = getDiaConfig(ev, data);
-  const overrides = Object.assign({}, dc.overrides);
-  delete overrides[chaveId + '|' + gnum];
-  setDiaConfig(eventoId, data, { overrides });
-  renderCronograma(eventoId, data);
-}
+function cssId(str){ return String(str).replace(/[^a-zA-Z0-9]/g, '-'); }
 // jsPDF (~350KB) só é carregado quando o organizador realmente pede o PDF do
 // cronograma — mesmo motivo do carregamento sob demanda do SheetJS.
 let jspdfLoadPromise = null;
@@ -3041,59 +3034,147 @@ function ensureJsPdfLoaded(){
   });
   return jspdfLoadPromise;
 }
+// html2canvas só é carregado quando o organizador pede a exportação em
+// imagem — mesmo padrão de carregamento sob demanda das outras libs.
+let html2canvasLoadPromise = null;
+function ensureHtml2CanvasLoaded(){
+  if(window.html2canvas) return Promise.resolve();
+  if(html2canvasLoadPromise) return html2canvasLoadPromise;
+  html2canvasLoadPromise = new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = 'https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js';
+    s.onload = () => resolve();
+    s.onerror = () => { html2canvasLoadPromise = null; reject(new Error('html2canvas load failed')); };
+    document.head.appendChild(s);
+  });
+  return html2canvasLoadPromise;
+}
+// Monta a tabela [head, body] de um dia específico pro autotable, a partir
+// da grade de quadras dedicadas (gerarGradeDia) — reaproveitado tanto no PDF
+// de um dia só quanto no PDF com todos os dias juntos.
+function montarTabelaCronogramaDia(ev, eventoId, dia){
+  const dc = getDiaConfig(ev, dia);
+  if(!dc.quadras) return null;
+  const items = categoriasOfDia(eventoId, dia);
+  if(!items.length) return null;
+  const evForCalc = Object.assign({}, ev, { duracaoPadrao: ev.duracaoPadrao||30, duracaoDecisiva: ev.duracaoDecisiva||40 });
+  const { jogos, fimMin } = gerarGradeDia(evForCalc, items, dc.quadras, dc.horaInicio);
+  if(!jogos.length) return null;
+  const corMap = corMapCategorias(jogos);
+  const inicioMin = hhmmToMin(dc.horaInicio) || 8*60;
+  const step = cronogramaGridStep(ev);
+  const fimGrade = Math.ceil(fimMin/step)*step;
+  const linhas = [];
+  for(let t = inicioMin; t < fimGrade; t += step) linhas.push(t);
+  const head = [['Horário'].concat(Array.from({length:dc.quadras}, (_,i) => 'Quadra ' + (i+1)))];
+  const body = linhas.map(t => {
+    const row = [minToHHMM(t)];
+    for(let i=0; i<dc.quadras; i++){
+      const s = jogos.find(x => x.quadraIdx === i && t >= x.inicio && t < x.fim);
+      row.push(s ? (s.categoria + ' · #' + s.gnum + ' ' + s.fase) : '');
+    }
+    return row;
+  });
+  return { head, body, corMap, quadras: dc.quadras };
+}
 // PDF no mesmo formato da grade em tela: horário nas linhas, quadra nas
-// colunas, célula colorida por categoria com "categoria · fase" — igual ao
-// modelo de planilha que o Ed já usa (a mesma célula repete o texto em cada
-// linha de 30min que o jogo ocupa, já que autotable não tem rowspan nativo).
+// colunas, célula colorida por categoria com "categoria · #jogo fase" — igual
+// ao modelo de planilha que o Ed já usa (a mesma célula repete o texto em
+// cada linha que o jogo ocupa, já que autotable não tem rowspan nativo).
 function exportCronogramaPDF(eventoId, dia){
   const ev = getEvento(eventoId);
   if(!ev) return;
-  const dc = getDiaConfig(ev, dia);
-  if(!dc.quadras){ toast('Informe o número de quadras primeiro'); return; }
   toast('Gerando PDF…');
   ensureJsPdfLoaded().then(() => {
-    const items = categoriasOfDia(eventoId, dia);
-    const evForCalc = Object.assign({}, ev, { duracaoPadrao: ev.duracaoPadrao||30, duracaoDecisiva: ev.duracaoDecisiva||40 });
-    const base = gerarCronograma(evForCalc, items, dc.quadras, dc.horaInicio);
-    const slots = applyCronogramaOverrides(ev, dia, base.slots);
-    if(!slots.length){ toast('Nada pra exportar ainda'); return; }
-    const corMap = corMapCategorias(slots);
-    const inicioMin = hhmmToMin(dc.horaInicio) || 8*60;
-    const fimMin = Math.max(...slots.map(s => s.fim));
-    const step = cronogramaGridStep(ev);
-    const fimGrade = Math.ceil(fimMin/step)*step;
-    const linhas = [];
-    for(let t = inicioMin; t < fimGrade; t += step) linhas.push(t);
+    const t = montarTabelaCronogramaDia(ev, eventoId, dia);
+    if(!t){ toast('Nada pra exportar ainda'); return; }
     const { jsPDF } = window.jspdf;
     const doc = new jsPDF({ orientation:'landscape', unit:'pt' });
     doc.setFontSize(14);
     doc.text(ev.nome + (ev.edicao ? (' — ' + ev.edicao) : ''), 30, 30);
     doc.setFontSize(10);
     doc.text('Cronograma de quadras • ' + formatDiaLabelFull(dia), 30, 46);
-    const head = [['Horário'].concat(Array.from({length:dc.quadras}, (_,i) => 'Quadra ' + (i+1)))];
-    const body = linhas.map(t => {
-      const row = [minToHHMM(t)];
-      for(let i=0; i<dc.quadras; i++){
-        const s = slots.find(x => x.quadraIdx === i && t >= x.inicio && t < x.fim);
-        row.push(s ? (s.categoria + ' · ' + s.fase) : '');
-      }
-      return row;
-    });
     doc.autoTable({
       startY: 58,
-      head,
-      body,
+      head: t.head,
+      body: t.body,
       styles: { fontSize: 7, cellPadding: 2.5 },
       headStyles: { fillColor: [37,84,224] },
       didParseCell: (data) => {
         if(data.section === 'body' && data.column.index > 0){
           const txt = String(data.cell.raw || '').split(' · ')[0];
-          if(txt && corMap[txt]) data.cell.styles.fillColor = hexToRgb(corMap[txt][0]);
+          if(txt && t.corMap[txt]) data.cell.styles.fillColor = hexToRgb(t.corMap[txt][0]);
         }
       }
     });
     doc.save('cronograma-' + dia + '.pdf');
   }).catch(() => toast('Não consegui carregar o gerador de PDF — confira sua internet'));
+}
+// Junta todos os dias do evento num único PDF (uma tabela por dia, uma
+// abaixo da outra, na mesma folha quando cabe — senão continua na página
+// seguinte automaticamente) — pedido do Ed pra não ter que exportar um PDF
+// por dia separado.
+function exportCronogramaTodosDiasPDF(eventoId){
+  const ev = getEvento(eventoId);
+  if(!ev) return;
+  const dias = diasOfEvento(ev);
+  if(!dias.length){ toast('Esse evento não tem dias configurados'); return; }
+  toast('Gerando PDF…');
+  ensureJsPdfLoaded().then(() => {
+    const { jsPDF } = window.jspdf;
+    const doc = new jsPDF({ orientation:'landscape', unit:'pt' });
+    let any = false;
+    let cursorY = 40;
+    doc.setFontSize(15);
+    doc.text(ev.nome + (ev.edicao ? (' — ' + ev.edicao) : ''), 30, cursorY);
+    cursorY += 14;
+    doc.setFontSize(9);
+    doc.text('Cronograma de quadras — todos os dias', 30, cursorY);
+    cursorY += 16;
+    dias.forEach(dia => {
+      const t = montarTabelaCronogramaDia(ev, eventoId, dia);
+      if(!t) return;
+      any = true;
+      const pageH = doc.internal.pageSize.getHeight();
+      if(cursorY > pageH - 100){ doc.addPage(); cursorY = 30; }
+      doc.setFontSize(11);
+      doc.setTextColor(30,30,30);
+      doc.text(formatDiaLabelFull(dia), 30, cursorY);
+      cursorY += 6;
+      doc.autoTable({
+        startY: cursorY,
+        head: t.head,
+        body: t.body,
+        styles: { fontSize: 6.5, cellPadding: 2 },
+        headStyles: { fillColor: [37,84,224] },
+        didParseCell: (data) => {
+          if(data.section === 'body' && data.column.index > 0){
+            const txt = String(data.cell.raw || '').split(' · ')[0];
+            if(txt && t.corMap[txt]) data.cell.styles.fillColor = hexToRgb(t.corMap[txt][0]);
+          }
+        }
+      });
+      cursorY = doc.lastAutoTable.finalY + 22;
+    });
+    if(!any){ toast('Nenhum dia com cronograma pra exportar ainda'); return; }
+    doc.save('cronograma-' + (ev.nome||'evento').toLowerCase().replace(/[^a-z0-9]+/g,'-') + '-todos-os-dias.pdf');
+  }).catch(() => toast('Não consegui carregar o gerador de PDF — confira sua internet'));
+}
+// Exporta a grade renderizada na tela como PNG (útil pra mandar direto no
+// WhatsApp dos árbitros, sem precisar abrir um PDF) — via html2canvas,
+// carregado sob demanda.
+function exportCronogramaImagem(eventoId, dia){
+  const el = document.getElementById('grade-table-' + cssId(dia));
+  if(!el){ toast('Nada pra exportar ainda'); return; }
+  toast('Gerando imagem…');
+  ensureHtml2CanvasLoaded().then(() => {
+    return window.html2canvas(el, { backgroundColor:'#ffffff', scale:2 });
+  }).then(canvas => {
+    const a = document.createElement('a');
+    a.href = canvas.toDataURL('image/png');
+    a.download = 'cronograma-' + dia + '.png';
+    a.click();
+  }).catch(() => toast('Não consegui gerar a imagem — confira sua internet'));
 }
 
 function saveSetup(editId){
