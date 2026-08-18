@@ -334,8 +334,13 @@ input[type=number]{text-align:center;}
 }
 .match-court input{
   border:none; background:transparent; font-size:10.5px; font-weight:700; color:var(--text);
-  width:64px; padding:0; text-align:left;
+  width:30px; padding:0; text-align:left;
 }
+/* Firefox e Chrome/Safari escondem as setinhas do number input — o campo é
+   pequeno de propósito (só o número, a palavra "Quadra" já vem fixa antes). */
+.match-court input[type=number]{ -moz-appearance:textfield; }
+.match-court input[type=number]::-webkit-outer-spin-button,
+.match-court input[type=number]::-webkit-inner-spin-button{ -webkit-appearance:none; margin:0; }
 .andamento-btn{
   flex:none; border:1.5px solid var(--chip-orange); color:var(--chip-orange); background:#fff;
   border-radius:20px; padding:4px 10px; font-size:11px; font-weight:800; cursor:pointer;
@@ -1095,8 +1100,13 @@ function setQuadra(chaveId, gnum, valor){
   const chave = getChave(chaveId);
   if(!chave) return;
   chave.quadras = Object.assign({}, chave.quadras);
-  if(valor && valor.trim()) chave.quadras[gnum] = valor.trim(); else delete chave.quadras[gnum];
+  const v = (valor||'').trim();
+  if(v) chave.quadras[gnum] = v; else delete chave.quadras[gnum];
   updateChave(chave);
+  // Feedback imediato pra deixar claro que o número foi salvo — o campo é
+  // só o número agora (a palavra "Quadra" já vem fixa no rótulo), e o Ed
+  // relatou não ter certeza se isso estava confirmando/salvando de fato.
+  toast(v ? ('Quadra ' + v + ' salva') : 'Quadra removida');
 }
 function toggleAndamento(chaveId, gnum){
   const chave = getChave(chaveId);
@@ -1485,6 +1495,145 @@ function effectiveGames(chave){
   return games;
 }
 
+// ---------- cronograma (planejamento de quadras/horários) ----------
+// Pedido do Ed: a partir do nº de quadras disponíveis num dia e da duração
+// de cada jogo, montar uma previsão de horário/quadra pra cada jogo de cada
+// categoria daquele dia — pra saber se cabe no dia e exportar em PDF pra
+// arbitragem. Respeita a ordem real da chave: um jogo só entra na simulação
+// depois que os jogos dos quais ele depende (Venc/Perd J N, ou — nos
+// formatos com fase de grupos — TODOS os jogos do grupo de que ele puxa a
+// classificação) já tiverem, na simulação, terminado. Categorias diferentes
+// não dependem entre si — só disputam as mesmas quadras.
+function isFaseDecisiva(fase){
+  return fase === 'S/Final' || fase === 'Final' || fase === '3º/4º';
+}
+function duracaoJogo(ev, g){
+  const padrao = ev.duracaoPadrao || 30;
+  const decisiva = ev.duracaoDecisiva || 40;
+  return isFaseDecisiva(g.fase) ? decisiva : padrao;
+}
+// Números dos jogos (na MESMA chave) dos quais um jogo depende antes de
+// poder começar: "Venc/Perd J N" aponta direto pro jogo N; uma referência de
+// grupo ({grp,pos}) depende de TODOS os jogos daquele grupo.
+function gameDeps(chave, g){
+  const deps = new Set();
+  [g.a, g.b].forEach(ref => {
+    if(typeof ref === 'string'){
+      const m = /^(Venc|Perd) J (\d+)$/.exec(ref);
+      if(m) deps.add(parseInt(m[2], 10));
+    } else if(ref && typeof ref === 'object' && ref.grp){
+      effectiveGames(chave).forEach(gg => { if(gg.grupo === ref.grp && gg.num !== g.num) deps.add(gg.num); });
+    }
+  });
+  return Array.from(deps);
+}
+function hhmmToMin(hhmm){
+  const m = /^(\d{1,2}):(\d{2})$/.exec(hhmm||'');
+  if(!m) return null;
+  return parseInt(m[1],10)*60 + parseInt(m[2],10);
+}
+function minToHHMM(min){
+  min = Math.round(min);
+  const h = Math.floor(min/60) % 24, m = ((min%60)+60)%60;
+  return String(h).padStart(2,'0') + ':' + String(m).padStart(2,'0');
+}
+// Motor de simulação — puro (sem tocar em estado global nem DOM), pra dar
+// pra testar isoladamente. Recebe as categorias do dia (cada uma com sua
+// chave), o nº de quadras e o horário de início; devolve os jogos com
+// quadra/horário previstos.
+function gerarCronograma(ev, items, quadras, horaInicioStr){
+  const inicioMin = hhmmToMin(horaInicioStr);
+  const inicio = inicioMin == null ? 8*60 : inicioMin;
+  if(!quadras || quadras < 1) return { slots: [], fimMin: inicio, ok:false };
+  const quadraFreeAt = Array(quadras).fill(inicio);
+  const porChave = items.map(({cat, chave}) => ({
+    chave, cat,
+    pendentes: effectiveGames(chave).slice().sort((a,b)=>a.num-b.num),
+    fimDe: {} // gnum -> minuto em que termina (previsto)
+  }));
+  const slots = [];
+  const totalJogos = porChave.reduce((s,pc)=>s+pc.pendentes.length, 0);
+  let guard = 0;
+  while(slots.length < totalJogos && guard < totalJogos + 500){
+    guard++;
+    const prontos = [];
+    porChave.forEach(pc => {
+      pc.pendentes.forEach(g => {
+        const deps = gameDeps(pc.chave, g);
+        if(deps.every(d => pc.fimDe[d] !== undefined)){
+          const earliest = deps.length ? Math.max(...deps.map(d => pc.fimDe[d])) : inicio;
+          prontos.push({ pc, g, earliest });
+        }
+      });
+    });
+    if(!prontos.length) break; // dependência não resolvida (não deveria acontecer) — sai pra não travar
+    prontos.sort((a,b) => (a.earliest - b.earliest) || (a.g.num - b.g.num));
+    prontos.forEach(({pc, g, earliest}) => {
+      let idx = 0;
+      for(let i=1;i<quadraFreeAt.length;i++) if(quadraFreeAt[i] < quadraFreeAt[idx]) idx = i;
+      const startAt = Math.max(quadraFreeAt[idx], earliest);
+      const dur = duracaoJogo(ev, g);
+      const fim = startAt + dur;
+      slots.push({ chaveId: pc.chave.id, categoria: pc.chave.nome, gnum: g.num, fase: g.fase, quadraIdx: idx, inicio: startAt, fim });
+      quadraFreeAt[idx] = fim;
+      pc.fimDe[g.num] = fim;
+      pc.pendentes = pc.pendentes.filter(x => x.num !== g.num);
+    });
+  }
+  const fimMin = slots.length ? Math.max(...slots.map(s=>s.fim)) : inicio;
+  return { slots, fimMin, ok:true };
+}
+function getDiaConfig(ev, data){
+  const c = (ev.diasConfig && ev.diasConfig[data]) || {};
+  return { quadras: c.quadras || 0, horaInicio: c.horaInicio || '08:00', horaLimite: c.horaLimite || '', overrides: c.overrides || {} };
+}
+function setDiaConfig(eventoId, data, patch){
+  const ev = getEvento(eventoId);
+  if(!ev) return;
+  ev.diasConfig = Object.assign({}, ev.diasConfig);
+  ev.diasConfig[data] = Object.assign({}, getDiaConfig(ev, data), patch);
+  updateEvento(ev);
+}
+function setEventoDuracao(eventoId, field, value){
+  const ev = getEvento(eventoId);
+  if(!ev) return;
+  const n = parseInt(value, 10);
+  ev[field] = isNaN(n) ? undefined : n;
+  updateEvento(ev);
+}
+// Aplica os ajustes manuais (feitos direto na tela do cronograma) por cima
+// do horário/quadra calculados automaticamente — o organizador pode mover
+// um jogo específico (ex: separar dois jogos de irmãos que caíram no mesmo
+// horário) sem precisar reconfigurar tudo.
+function applyCronogramaOverrides(ev, data, slots){
+  const overrides = getDiaConfig(ev, data).overrides;
+  return slots.map(s => {
+    const ov = overrides[s.chaveId + '|' + s.gnum];
+    if(!ov) return Object.assign({}, s, { manual:false });
+    const dur = s.fim - s.inicio;
+    const inicio = ov.inicio != null ? (hhmmToMin(ov.inicio) ?? s.inicio) : s.inicio;
+    const quadraIdx = ov.quadraIdx != null ? ov.quadraIdx : s.quadraIdx;
+    return Object.assign({}, s, { inicio, fim: inicio + dur, quadraIdx, manual:true });
+  });
+}
+// Depois de aplicar os ajustes manuais, dois jogos podem acabar sobrepostos
+// na mesma quadra — marca esses casos pra avisar visualmente na tela.
+function detectConflitos(slots){
+  const byQuadra = {};
+  slots.forEach(s => { (byQuadra[s.quadraIdx] = byQuadra[s.quadraIdx] || []).push(s); });
+  const conflitos = new Set();
+  Object.values(byQuadra).forEach(arr => {
+    arr.sort((a,b) => a.inicio - b.inicio);
+    for(let i=1; i<arr.length; i++){
+      if(arr[i].inicio < arr[i-1].fim){
+        conflitos.add(arr[i].chaveId + '|' + arr[i].gnum);
+        conflitos.add(arr[i-1].chaveId + '|' + arr[i-1].gnum);
+      }
+    }
+  });
+  return conflitos;
+}
+
 // ---------- rendering ----------
 const app = document.getElementById('app');
 
@@ -1547,6 +1696,7 @@ function route(){
   if(parts[0] === 'evento') return renderEventoView(parts[1], parts[2] ? decodeURIComponent(parts[2]) : null);
   if(parts[0] === 'nova-categoria') return renderSetup(null, { eventoId:parts[1], data:decodeURIComponent(parts[2]) });
   if(parts[0] === 'importar-lista') return renderImportLista(parts[1], decodeURIComponent(parts[2]));
+  if(parts[0] === 'cronograma') return renderCronograma(parts[1], decodeURIComponent(parts[2]));
   if(parts[0] === 'chave') return renderChaveView(parts[1]);
   if(parts[0] === 'editar') return renderSetup(parts[1]);
 
@@ -1802,6 +1952,7 @@ function renderEventoView(eventoId, selectedDia){
       ${body}
       <button class="btn accent" style="margin-top:6px;" onclick="location.hash='/nova-categoria/${eventoId}/'+encodeURIComponent('${dia}')">+ Nova categoria</button>
       <button class="btn ghost" style="margin-top:8px;" onclick="location.hash='/importar-lista/${eventoId}/'+encodeURIComponent('${dia}')">📥 Importar lista completa (todas as categorias)</button>
+      <button class="btn secondary" style="margin-top:8px;" onclick="location.hash='/cronograma/${eventoId}/'+encodeURIComponent('${dia}')">🗓️ Cronograma de quadras</button>
     </div>`;
 }
 function togglePublicarEvento(id){
@@ -2005,7 +2156,7 @@ function renderPubMatchCard(chave, g){
   } else if(done && (res.sets||[]).length > 1){
     scoreArea = `<div class="hint" style="text-align:center;">${formatSetsSummary(res.sets)}</div>`;
   }
-  const metaRow = (quadra && !done) ? `<div class="match-meta-row"><div class="match-court">🏐 ${escapeHtml(quadra)}</div></div>` : '';
+  const metaRow = (quadra && !done) ? `<div class="match-meta-row"><div class="match-court">🏐 Quadra ${escapeHtml(quadra)}</div></div>` : '';
   return `<div class="match-card ${cardClass}">
     <div class="match-top">
       <span class="match-num">#${g.num}</span>
@@ -2567,6 +2718,10 @@ function renderImportLista(eventoId, dia){
             ${g.modalidade==='quarteto'?'Quartetos':'Duplas'} • ${g.times.length} time${g.times.length===1?'':'s'}
             ${sizeOk ? '' : ` • <span style="color:#a68e4f; font-weight:600;">⚠️ não bate com um tamanho de chave pronto (${SIZES[0]} a ${SIZES[SIZES.length-1]}) — dá pra ajustar depois em "Editar chave"</span>`}
           </div>
+          <div style="display:flex; align-items:center; gap:8px; margin-top:8px;">
+            <label style="font-size:12.5px; color:var(--muted2); font-weight:600; white-space:nowrap;">⏰ Início</label>
+            <input type="time" value="${escapeHtmlAttr(g.horaInicio||'')}" oninput="importListaState.groups[${i}].horaInicio=this.value" style="margin:0; max-width:130px;">
+          </div>
         </div>`;
       }).join('')}
       <button class="btn" onclick="confirmarImportLista()">Importar ${includedCount} categoria${includedCount===1?'':'s'}</button>
@@ -2602,7 +2757,7 @@ function onImportListaCompletaSelected(e){
       importListaState.fileName = file.name;
       importListaState.groups = rawGroups.map(g => {
         const { modalidade, times } = buildTimesFromRows(g.rows);
-        return { categoria: g.categoria, modalidade, times, incluir: true };
+        return { categoria: g.categoria, modalidade, times, incluir: true, horaInicio: '' };
       });
       renderImportLista(importListaState.eventoId, importListaState.dia);
     } catch(err){
@@ -2632,7 +2787,7 @@ function confirmarImportLista(){
       criadoEm: Date.now()
     };
     updateChave(c);
-    const cat = { id:uid('cat'), eventoId:s.eventoId, data:s.dia, chaveId:c.id, horaInicio:null, criadoEm:Date.now() };
+    const cat = { id:uid('cat'), eventoId:s.eventoId, data:s.dia, chaveId:c.id, horaInicio: g.horaInicio || null, criadoEm:Date.now() };
     updateCategoria(cat);
   });
   const eventoId = s.eventoId, dia = s.dia;
@@ -2641,6 +2796,163 @@ function confirmarImportLista(){
   toast(count + ' categoria' + (count===1?'':'s') + ' criada' + (count===1?'':'s') + ' — confira e ajuste os times se precisar');
   location.hash = '/evento/' + eventoId + '/' + encodeURIComponent(dia);
 }
+
+// ---------- tela do cronograma ----------
+function renderCronograma(eventoId, dia){
+  const ev = getEvento(eventoId);
+  if(!ev){ location.hash = '/organizador'; return; }
+  const dc = getDiaConfig(ev, dia);
+  const items = categoriasOfDia(eventoId, dia);
+  const backHash = '/evento/' + eventoId + '/' + encodeURIComponent(dia);
+
+  const configCard = `<div class="card">
+    <label>Quadras disponíveis nesse dia</label>
+    <input type="number" min="1" step="1" value="${dc.quadras||''}" placeholder="ex: 9" oninput="setDiaConfig('${eventoId}','${dia}',{quadras:parseInt(this.value,10)||0}); renderCronograma('${eventoId}','${dia}')">
+    <div style="display:flex; gap:8px; margin-top:8px;">
+      <div style="flex:1;">
+        <label>Início do dia</label>
+        <input type="time" value="${escapeHtmlAttr(dc.horaInicio)}" oninput="setDiaConfig('${eventoId}','${dia}',{horaInicio:this.value}); renderCronograma('${eventoId}','${dia}')">
+      </div>
+      <div style="flex:1;">
+        <label>Horário limite (opcional)</label>
+        <input type="time" value="${escapeHtmlAttr(dc.horaLimite)}" oninput="setDiaConfig('${eventoId}','${dia}',{horaLimite:this.value}); renderCronograma('${eventoId}','${dia}')">
+      </div>
+    </div>
+    <div style="display:flex; gap:8px; margin-top:8px;">
+      <div style="flex:1;">
+        <label>Duração jogo (min)</label>
+        <input type="number" min="5" step="5" value="${ev.duracaoPadrao||30}" oninput="setEventoDuracao('${eventoId}','duracaoPadrao',this.value); renderCronograma('${eventoId}','${dia}')">
+      </div>
+      <div style="flex:1;">
+        <label>Duração semi/final (min)</label>
+        <input type="number" min="5" step="5" value="${ev.duracaoDecisiva||40}" oninput="setEventoDuracao('${eventoId}','duracaoDecisiva',this.value); renderCronograma('${eventoId}','${dia}')">
+      </div>
+    </div>
+    <div class="hint" style="margin-top:6px;">A ordem respeita a chave — um jogo só entra no horário depois que os jogos dos quais ele depende já tiverem, na simulação, terminado. Duração/quadras valem pra esse dia; pode ajustar depois se algo mudar.</div>
+  </div>`;
+
+  let body;
+  if(!items.length){
+    body = `<div class="empty" style="margin-top:12px;"><div class="big">🏐</div><div style="font-weight:700; font-size:16px;">Nenhuma categoria nesse dia ainda</div></div>`;
+  } else if(!dc.quadras){
+    body = `<div class="hint" style="margin-top:10px;">Informe o número de quadras acima pra ver o cronograma.</div>`;
+  } else {
+    const evForCalc = Object.assign({}, ev, { duracaoPadrao: ev.duracaoPadrao||30, duracaoDecisiva: ev.duracaoDecisiva||40 });
+    const base = gerarCronograma(evForCalc, items, dc.quadras, dc.horaInicio);
+    const slots = applyCronogramaOverrides(ev, dia, base.slots);
+    const conflitos = detectConflitos(slots);
+    slots.sort((a,b) => (a.inicio-b.inicio) || (a.quadraIdx-b.quadraIdx));
+    const limiteMin = dc.horaLimite ? hhmmToMin(dc.horaLimite) : null;
+    const fimMin = slots.length ? Math.max(...slots.map(s=>s.fim)) : (hhmmToMin(dc.horaInicio) || 0);
+    const feasibility = limiteMin != null
+      ? (fimMin <= limiteMin
+          ? `<div class="section-note" style="background:var(--success-bg); color:var(--success); font-weight:600;">✅ Cabe no horário — previsão de término ${minToHHMM(fimMin)}, ${minToHHMM(limiteMin-fimMin)} de folga antes do limite (${dc.horaLimite}).</div>`
+          : `<div class="section-note" style="background:#fbeaea; color:#b13a3a; font-weight:600;">⚠️ Não cabe no horário limite — previsão de término ${minToHHMM(fimMin)}, ${fimMin-limiteMin} min além do limite (${dc.horaLimite}). Considere mais quadras, reduzir a duração dos jogos, ou tirar alguma categoria desse dia.</div>`)
+      : `<div class="section-note">Previsão de término: <strong>${minToHHMM(fimMin)}</strong> (defina um horário limite acima pra saber se cabe).</div>`;
+    const conflitoAviso = conflitos.size ? `<div class="section-note" style="background:#fbeaea; color:#b13a3a; font-weight:600; margin-top:6px;">⚠️ ${conflitos.size} jogo${conflitos.size===1?'':'s'} com conflito de horário/quadra depois de ajustes manuais — confira as caixas marcadas abaixo.</div>` : '';
+
+    const rows = slots.map(s => {
+      const key = s.chaveId+'|'+s.gnum;
+      const isConflito = conflitos.has(key);
+      return `<div class="card" style="padding:10px 12px; margin-bottom:6px; ${isConflito?'border-color:#d9534f; border-width:1.5px;':''}">
+        <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+          <input type="time" value="${minToHHMM(s.inicio)}" style="max-width:92px; margin:0;" onchange="onCronogramaOverride('${eventoId}','${dia}','${s.chaveId}',${s.gnum},'inicio',this.value)">
+          <select style="max-width:120px; margin:0;" onchange="onCronogramaOverride('${eventoId}','${dia}','${s.chaveId}',${s.gnum},'quadraIdx',this.value)">
+            ${Array.from({length:dc.quadras}, (_,i)=>`<option value="${i}" ${i===s.quadraIdx?'selected':''}>Quadra ${i+1}</option>`).join('')}
+          </select>
+          <div style="flex:1; min-width:120px; font-weight:600; font-size:13.5px;">${escapeHtml(s.categoria)}</div>
+          <div class="hint" style="margin:0;">Jogo ${s.gnum} • ${escapeHtml(phaseLabel(s.fase))}</div>
+          ${s.manual ? `<span style="font-size:11px; color:var(--muted2); font-weight:700;">✏️ manual</span><button class="btn ghost small" style="padding:3px 8px;" onclick="revertCronogramaOverride('${eventoId}','${dia}','${s.chaveId}',${s.gnum})">↺</button>` : ''}
+        </div>
+        ${isConflito ? `<div class="hint" style="color:#b13a3a; margin-top:4px;">⚠️ conflito: outro jogo caiu no mesmo horário nessa quadra</div>` : ''}
+      </div>`;
+    }).join('');
+
+    body = `${feasibility}${conflitoAviso}
+      <button class="btn ghost small" style="margin:10px 0;" onclick="exportCronogramaPDF('${eventoId}','${dia}')">📄 Exportar PDF</button>
+      ${rows}`;
+  }
+
+  app.innerHTML = `
+    ${header('Cronograma', escapeHtml(ev.nome) + ' • ' + formatDiaLabel(dia), backHash)}
+    <div class="wrap">
+      ${configCard}
+      ${body}
+    </div>`;
+}
+function onCronogramaOverride(eventoId, data, chaveId, gnum, field, value){
+  const ev = getEvento(eventoId);
+  if(!ev) return;
+  const dc = getDiaConfig(ev, data);
+  const key = chaveId + '|' + gnum;
+  const cur = Object.assign({}, dc.overrides[key]);
+  if(field === 'quadraIdx') cur.quadraIdx = parseInt(value, 10);
+  else if(field === 'inicio') cur.inicio = value;
+  const overrides = Object.assign({}, dc.overrides);
+  overrides[key] = cur;
+  setDiaConfig(eventoId, data, { overrides });
+  renderCronograma(eventoId, data);
+}
+function revertCronogramaOverride(eventoId, data, chaveId, gnum){
+  const ev = getEvento(eventoId);
+  if(!ev) return;
+  const dc = getDiaConfig(ev, data);
+  const overrides = Object.assign({}, dc.overrides);
+  delete overrides[chaveId + '|' + gnum];
+  setDiaConfig(eventoId, data, { overrides });
+  renderCronograma(eventoId, data);
+}
+// jsPDF (~350KB) só é carregado quando o organizador realmente pede o PDF do
+// cronograma — mesmo motivo do carregamento sob demanda do SheetJS.
+let jspdfLoadPromise = null;
+function ensureJsPdfLoaded(){
+  if(window.jspdf && window.jspdf.jsPDF) return Promise.resolve();
+  if(jspdfLoadPromise) return jspdfLoadPromise;
+  jspdfLoadPromise = new Promise((resolve, reject) => {
+    const s1 = document.createElement('script');
+    s1.src = 'https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js';
+    s1.onload = () => {
+      const s2 = document.createElement('script');
+      s2.src = 'https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js';
+      s2.onload = () => resolve();
+      s2.onerror = () => { jspdfLoadPromise = null; reject(new Error('autotable load failed')); };
+      document.head.appendChild(s2);
+    };
+    s1.onerror = () => { jspdfLoadPromise = null; reject(new Error('jspdf load failed')); };
+    document.head.appendChild(s1);
+  });
+  return jspdfLoadPromise;
+}
+function exportCronogramaPDF(eventoId, dia){
+  const ev = getEvento(eventoId);
+  if(!ev) return;
+  const dc = getDiaConfig(ev, dia);
+  if(!dc.quadras){ toast('Informe o número de quadras primeiro'); return; }
+  toast('Gerando PDF…');
+  ensureJsPdfLoaded().then(() => {
+    const items = categoriasOfDia(eventoId, dia);
+    const evForCalc = Object.assign({}, ev, { duracaoPadrao: ev.duracaoPadrao||30, duracaoDecisiva: ev.duracaoDecisiva||40 });
+    const base = gerarCronograma(evForCalc, items, dc.quadras, dc.horaInicio);
+    const slots = applyCronogramaOverrides(ev, dia, base.slots);
+    slots.sort((a,b) => (a.inicio-b.inicio) || (a.quadraIdx-b.quadraIdx));
+    const { jsPDF } = window.jspdf;
+    const doc = new jsPDF({ orientation:'portrait', unit:'pt' });
+    doc.setFontSize(14);
+    doc.text(ev.nome + (ev.edicao ? (' — ' + ev.edicao) : ''), 40, 40);
+    doc.setFontSize(10);
+    doc.text('Cronograma de quadras • ' + formatDiaLabelFull(dia), 40, 58);
+    const body = slots.map(s => [minToHHMM(s.inicio), 'Quadra ' + (s.quadraIdx+1), s.categoria, 'Jogo ' + s.gnum, phaseLabel(s.fase)]);
+    doc.autoTable({
+      startY: 72,
+      head: [['Horário','Quadra','Categoria','Jogo','Fase']],
+      body,
+      styles: { fontSize: 9 },
+      headStyles: { fillColor: [37,84,224] }
+    });
+    doc.save('cronograma-' + dia + '.pdf');
+  }).catch(() => toast('Não consegui carregar o gerador de PDF — confira sua internet'));
+}
+
 function saveSetup(editId){
   const s = setupState;
   const numTimes = s.times.length;
@@ -3773,8 +4085,8 @@ function renderMatchCard(chave, g){
     scoreArea = `<div class="hint" style="text-align:center;">W.O. · <span style="text-decoration:underline;cursor:pointer;" onclick="editMatch('${chave.id}',${g.num})">editar</span></div>`;
   }
 
-  const quadraField = !done ? `<div class="match-court">🏐 <input type="text" placeholder="Quadra" value="${escapeHtmlAttr(quadra)}" onchange="setQuadra('${chave.id}',${g.num},this.value)"></div>` :
-    (quadra ? `<div class="match-court">🏐 ${escapeHtml(quadra)}</div>` : '');
+  const quadraField = !done ? `<div class="match-court">🏐 Quadra <input type="number" inputmode="numeric" min="1" placeholder="nº" value="${escapeHtmlAttr(quadra)}" onchange="setQuadra('${chave.id}',${g.num},this.value)"></div>` :
+    (quadra ? `<div class="match-court">🏐 Quadra ${escapeHtml(quadra)}</div>` : '');
   const andamentoBtn = (!done && info.ready) ? `<button class="andamento-btn ${st.key==='andamento'?'on':''}" onclick="toggleAndamento('${chave.id}',${g.num})">${st.key==='andamento' ? '⏸ Encerrar' : '▶ Iniciar jogo'}</button>` : '';
   const metaRow = (quadraField || andamentoBtn) ? `<div class="match-meta-row">${quadraField}${andamentoBtn}</div>` : '';
 
