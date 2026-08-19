@@ -1758,89 +1758,107 @@ function gerarGradeDia(ev, items, quadrasTotais, horaInicioDiaStr){
   const inicioDia = hhmmToMin(horaInicioDiaStr) ?? 8*60;
   if(!quadrasTotais || quadrasTotais < 1) return { jogos: [], fimMin: inicioDia };
 
-  const porCat = items.map(({cat, chave}) => ({
-    cat, chave,
-    steps: normalizeCategoriaSteps(cat, quadrasTotais, inicioDia),
-    pendentes: effectiveGames(chave).slice().sort((a,b) => a.num - b.num),
-    fimDe: {},       // gnum -> minuto em que termina (previsto)
-    colunas: [],      // índices de quadra REAL que essa categoria tem "presos" agora
+  // Cada categoria é montada de uma vez só, do primeiro ao último jogo dela,
+  // ANTES de passar pra próxima — isso é o que mantém o cronograma
+  // "agrupado" (cada quadra real fica reservada pra mesma categoria o dia
+  // inteiro, só passando pra outra categoria quando a dona termina de vez).
+  // A ordem de montagem é por horário de início (quem começa mais cedo tem
+  // preferência de quadra), com empate pela ordem da lista.
+  // Dentro da montagem de UMA categoria, se ela tiver degraus de quadra
+  // (cat.quadraSteps), ela pode reivindicar quadra(s) extra do que sobrou —
+  // livre porque ninguém pegou ainda, ou porque uma categoria já processada
+  // terminou antes — e devolve o excesso se a cota cair (fases finais, por
+  // exemplo). Categoria sem degrau nunca solta nem invade quadra de outra.
+  const porCat = items.map((it, idx) => ({
+    cat: it.cat, chave: it.chave,
+    steps: normalizeCategoriaSteps(it.cat, quadrasTotais, inicioDia),
+    pendentes: effectiveGames(it.chave).slice().sort((a,b) => a.num - b.num),
+    _origIdx: idx,
   }));
+  porCat.sort((a,b) => (a.steps[0].at - b.steps[0].at) || (a._origIdx - b._origIdx));
 
   const quadraFreeAt = Array(quadrasTotais).fill(inicioDia);
-  const quadraDono = Array(quadrasTotais).fill(null); // pc atual dona da quadra, ou null (livre pra qualquer um pegar)
-
-  function liberarExcesso(pc, quota){
-    while(pc.colunas.length > quota){
-      // solta a quadra mais ociosa (a que já está livre há mais tempo) —
-      // não tem jogo futuro dela reservado, é a que "sobra".
-      let pior = pc.colunas[0];
-      for(const i of pc.colunas) if(quadraFreeAt[i] < quadraFreeAt[pior]) pior = i;
-      pc.colunas = pc.colunas.filter(i => i !== pior);
-      if(quadraDono[pior] === pc) quadraDono[pior] = null;
-    }
-  }
-  function escolherQuadra(pc, quota, earliest){
-    liberarExcesso(pc, quota);
-    const candidatas = pc.colunas.slice();
-    if(pc.colunas.length < quota){
-      for(let i=0; i<quadraFreeAt.length; i++){
-        if(quadraDono[i] === null && !candidatas.includes(i)) candidatas.push(i);
-      }
-    }
-    if(!candidatas.length){
-      // não deveria acontecer (toda quadra tem dono e a cota já é 0?) — usa
-      // qualquer uma pra não travar a simulação.
-      for(let i=0;i<quadraFreeAt.length;i++) candidatas.push(i);
-    }
-    let idx = candidatas[0];
-    for(const i of candidatas) if(quadraFreeAt[i] < quadraFreeAt[idx]) idx = i;
-    if(!pc.colunas.includes(idx)){ pc.colunas.push(idx); }
-    quadraDono[idx] = pc;
-    return idx;
-  }
-
   const jogos = [];
-  const totalJogos = porCat.reduce((s,pc) => s + pc.pendentes.length, 0);
-  let guard = 0;
-  while(jogos.length < totalJogos && guard < totalJogos + 1000){
-    guard++;
-    const prontos = [];
-    porCat.forEach(pc => {
-      pc.pendentes.forEach(g => {
-        const deps = gameDeps(pc.chave, g);
-        if(deps.every(d => pc.fimDe[d] !== undefined)){
-          const depEarliest = deps.length ? Math.max(...deps.map(d => pc.fimDe[d])) : pc.steps[0].at;
-          prontos.push({ pc, g, depEarliest });
-        }
-      });
-    });
-    if(!prontos.length) break; // dependência não resolvida — não deveria acontecer, sai pra não travar
-    prontos.sort((a,b) => (a.depEarliest - b.depEarliest) || (a.g.num - b.g.num));
-    prontos.forEach(({pc, g, depEarliest}) => {
-      let earliest = Math.max(depEarliest, pc.steps[0].at);
+
+  porCat.forEach(pc => {
+    const fimDe = {};      // gnum -> minuto em que termina (previsto)
+    const meusFins = [];   // fins dos jogos já marcados dessa categoria (regra de fases finais)
+    let colunas = [];      // índices de quadra REAL "da vez" dessa categoria
+    // menor horário em que a categoria já tem direito a N quadras ao mesmo
+    // tempo (o primeiro degrau que alcança N) — usado pra nunca deixar a
+    // categoria reivindicar uma quadra "extra" antes da hora combinada, nem
+    // que essa quadra esteja livre desde cedo por acaso.
+    function earliestForQuota(n){
+      for(const s of pc.steps){ if(s.quadras >= n) return s.at; }
+      return Infinity;
+    }
+
+    let guard = 0;
+    while(pc.pendentes.length && guard < pc.pendentes.length + 200){
+      guard++;
+      const prontos = pc.pendentes.filter(g => gameDeps(pc.chave, g).every(d => fimDe[d] !== undefined));
+      if(!prontos.length) break; // dependência não resolvida — não deveria acontecer, sai pra não travar
+      prontos.sort((a,b) => a.num - b.num);
+      const g = prontos[0];
+      const deps = gameDeps(pc.chave, g);
+      let earliest = deps.length ? Math.max(...deps.map(d => fimDe[d])) : pc.steps[0].at;
       // Fases finais: nunca mais de 2 jogos da MESMA categoria ao mesmo
-      // tempo enquanto restam menos de 4 pra fechar (mesma regra de antes —
-      // ver gerarCronograma) — independente da cota de quadras configurada.
+      // tempo enquanto restam menos de 4 pra fechar (mesma regra de antes).
       if(pc.pendentes.length < 4){
-        const finsDesc = jogos.filter(s => s.chaveId === pc.chave.id).map(s => s.fim).sort((a,b) => b-a);
+        const finsDesc = meusFins.slice().sort((a,b) => b-a);
         if(finsDesc.length >= 2) earliest = Math.max(earliest, finsDesc[1]);
       }
-      const quota = quadrasAtStep(pc.steps, earliest);
-      const idx = escolherQuadra(pc, quota, earliest);
-      const startAt = Math.max(quadraFreeAt[idx], earliest);
+      // 1) converge a cota "de descida" olhando só pras quadras que já são
+      // da categoria (nunca considera quadra nova aqui — só solta excesso
+      // se a cota cair antes do jogo realmente poder começar).
+      let refTime = earliest;
+      for(let iter=0; iter<8; iter++){
+        const capNow = quadrasAtStep(pc.steps, refTime);
+        if(colunas.length > capNow) colunas = colunas.slice(0, capNow);
+        if(!colunas.length) break;
+        let bestOwned = colunas[0];
+        for(const i of colunas) if(quadraFreeAt[i] < quadraFreeAt[bestOwned]) bestOwned = i;
+        const newRef = Math.max(quadraFreeAt[bestOwned], earliest);
+        if(newRef === refTime) break;
+        refTime = newRef;
+      }
+      const capNow = quadrasAtStep(pc.steps, refTime);
+      if(colunas.length > capNow) colunas = colunas.slice(0, capNow);
+
+      // 2) escolhe entre esperar numa quadra já "da vez" ou reivindicar uma
+      // quadra nova — só permitido a partir do horário do degrau que libera
+      // essa unidade extra, mesmo que fisicamente já esteja livre antes.
+      let idx = null, startAt = Infinity, viaNova = false;
+      if(colunas.length){
+        let bestOwned = colunas[0];
+        for(const i of colunas) if(quadraFreeAt[i] < quadraFreeAt[bestOwned]) bestOwned = i;
+        idx = bestOwned;
+        startAt = Math.max(quadraFreeAt[bestOwned], earliest);
+      }
+      if(colunas.length < capNow){
+        const threshold = earliestForQuota(colunas.length + 1);
+        let bestNovo = null, bestNovoStart = Infinity;
+        for(let i=0; i<quadraFreeAt.length; i++){
+          if(colunas.includes(i)) continue;
+          const st = Math.max(quadraFreeAt[i], earliest, threshold);
+          if(st < bestNovoStart){ bestNovoStart = st; bestNovo = i; }
+        }
+        if(bestNovo !== null && bestNovoStart < startAt){
+          idx = bestNovo; startAt = bestNovoStart; viaNova = true;
+        }
+      }
+      if(viaNova) colunas.push(idx);
+
       const dur = duracaoJogo(ev, g);
       const fim = startAt + dur;
       jogos.push({ chaveId: pc.chave.id, categoria: pc.chave.nome, gnum: g.num, fase: g.fase, quadraIdx: idx, inicio: startAt, fim });
       quadraFreeAt[idx] = fim;
-      pc.fimDe[g.num] = fim;
+      fimDe[g.num] = fim;
+      meusFins.push(fim);
       pc.pendentes = pc.pendentes.filter(x => x.num !== g.num);
-      if(pc.pendentes.length === 0){
-        // categoria terminou — devolve todas as quadras dela pro pool.
-        pc.colunas.forEach(i => { if(quadraDono[i] === pc) quadraDono[i] = null; });
-        pc.colunas = [];
-      }
-    });
-  }
+    }
+  });
+
   const fimMin = jogos.length ? Math.max(...jogos.map(j => j.fim)) : inicioDia;
   return { jogos, fimMin };
 }
