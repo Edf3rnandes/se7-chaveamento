@@ -46,6 +46,8 @@ button{font-family:inherit;}
   box-shadow:0 2px 10px rgba(0,0,0,.12);
 }
 .app-header .row{display:flex; align-items:center; gap:10px;}
+.header-logo{width:40px; height:40px; border-radius:9px; object-fit:contain; background:rgba(255,255,255,.9); flex:none; padding:3px;}
+@media (min-width:640px){ .header-logo{width:52px; height:52px; border-radius:11px; padding:4px;} }
 .app-header .back{
   background:rgba(255,255,255,.18); border:none; color:#fff; width:34px;height:34px;border-radius:10px;
   font-size:18px; display:flex; align-items:center; justify-content:center; flex:none; cursor:pointer;
@@ -218,6 +220,8 @@ input[type=number]{text-align:center;}
 .cat-switcher select{width:100%; padding:9px 10px; border-radius:10px; border:none; background:rgba(255,255,255,.18); color:#fff; font-size:13px; font-weight:600;}
 .cat-switcher select option{color:#23333a;}
 .pub-badge{display:inline-block; font-size:11px; font-weight:800; padding:4px 10px; border-radius:20px; background:rgba(255,255,255,.2); color:#fff; margin-top:4px;}
+.pub-refresh{cursor:pointer; margin-left:6px;}
+.pub-refresh:active{background:rgba(255,255,255,.35);}
 .view-toggle{display:flex; gap:6px; margin-bottom:10px;}
 .view-toggle .vt-opt{
   flex:1; text-align:center; padding:9px 4px; border-radius:11px; border:1.5px solid var(--border);
@@ -245,7 +249,8 @@ input[type=number]{text-align:center;}
 .tree-zoom-bar span#treeZoomPct{font-weight:800; color:var(--text); flex:none;}
 .tree-zoom-bar .hint{white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
 .tree-scroll{overflow:auto; max-height:min(70vh,560px); cursor:grab; touch-action:pan-x pan-y;}
-.tree-canvas{position:relative; zoom:100%;}
+.tree-canvas-wrap{position:relative;}
+.tree-canvas{position:relative; transform-origin:top left;}
 .tree-svg{position:absolute; top:0; left:0; pointer-events:none;}
 .tree-line{fill:none; stroke:var(--border); stroke-width:2;}
 .tree-midline{
@@ -372,6 +377,7 @@ input[type=number]{text-align:center;}
 .chave-item .thumb{width:52px; height:52px; border-radius:10px; object-fit:cover; flex:none; background:#eef2f2;}
 .foto-upload-preview{width:100%; height:110px; object-fit:cover; border-radius:10px; margin-top:8px; display:block;}
 .foto-upload-btn{margin-top:8px;}
+.logo-upload-preview{width:76px; height:76px; object-fit:contain; border-radius:10px; margin-top:8px; display:block; background:#eef2f2; padding:6px;}
 textarea{
   width:100%; padding:11px 12px; border-radius:10px; border:1.5px solid var(--border);
   font-size:15px; background:#fff; color:var(--text); font-family:inherit; min-height:80px; resize:vertical;
@@ -931,20 +937,54 @@ function normalizeChaveFromFirestore(chave){
   return chave;
 }
 
-fbDb.collection('chaves').onSnapshot(snap => {
-  _chavesCache = snap.docs.map(d => normalizeChaveFromFirestore(Object.assign({ id: d.id }, d.data())));
-  route();
-}, err => { console.error('chaves onSnapshot', err); toast('Sem conexão com o servidor'); });
-
-fbDb.collection('eventos').onSnapshot(snap => {
-  _eventosCache = snap.docs.map(d => Object.assign({ id: d.id }, d.data()));
-  route();
-}, err => console.error('eventos onSnapshot', err));
-
-fbDb.collection('categorias').onSnapshot(snap => {
-  _categoriasCache = snap.docs.map(d => Object.assign({ id: d.id }, d.data()));
-  route();
-}, err => console.error('categorias onSnapshot', err));
+// Assina (ou reassina) os três listeners em tempo real. route() roda a cada
+// snapshot, então qualquer tela aberta (organizador OU público) já deveria
+// se atualizar sozinha sem precisar de navegação — mas o Ed relatou que no
+// modo público, quem está assistindo precisa voltar pro menu e abrir a
+// categoria de novo pra ver o que mudou. Isso bate com um problema conhecido
+// de navegadores mobile: ao trocar de app ou trancar a tela, a conexão em
+// tempo real do Firestore (WebSocket/long-polling) pode ficar "adormecida" e
+// não se recupera sozinha quando a pessoa volta — o app continua mostrando
+// o último estado que tinha antes de ir pro segundo plano. Cancelar os
+// listeners antigos e assinar de novo força uma reconexão limpa (que já
+// dispara um snapshot fresco na hora), sem precisar trocar de tela nem
+// perder o lugar onde a pessoa estava.
+let _liveUnsubs = [];
+function attachLiveListeners(){
+  _liveUnsubs.forEach(unsub => { try{ unsub(); }catch(e){} });
+  _liveUnsubs = [];
+  _liveUnsubs.push(fbDb.collection('chaves').onSnapshot(snap => {
+    _chavesCache = snap.docs.map(d => normalizeChaveFromFirestore(Object.assign({ id: d.id }, d.data())));
+    route();
+  }, err => { console.error('chaves onSnapshot', err); toast('Sem conexão com o servidor'); }));
+  _liveUnsubs.push(fbDb.collection('eventos').onSnapshot(snap => {
+    _eventosCache = snap.docs.map(d => Object.assign({ id: d.id }, d.data()));
+    route();
+  }, err => console.error('eventos onSnapshot', err)));
+  _liveUnsubs.push(fbDb.collection('categorias').onSnapshot(snap => {
+    _categoriasCache = snap.docs.map(d => Object.assign({ id: d.id }, d.data()));
+    route();
+  }, err => console.error('categorias onSnapshot', err)));
+}
+attachLiveListeners();
+// Reabre os listeners quando a aba volta a ficar visível (troca de app,
+// desbloqueio de tela), quando a página volta do bfcache do Safari
+// (event.persisted — não roda o script de novo do zero, só "acorda" o que já
+// estava congelado) e quando a conexão de rede volta depois de cair.
+if(typeof document !== 'undefined' && document.addEventListener){
+  document.addEventListener('visibilitychange', () => { if(document.visibilityState === 'visible') attachLiveListeners(); });
+}
+if(typeof window !== 'undefined' && window.addEventListener){
+  window.addEventListener('pageshow', (e) => { if(e && e.persisted) attachLiveListeners(); });
+  window.addEventListener('online', attachLiveListeners);
+}
+// Botão manual "🔄 Atualizar" no modo público — reforça a reconexão
+// automática acima pra quem quiser ter certeza que está vendo o mais
+// recente, sem sair da tela onde está.
+function manualRefreshPub(){
+  attachLiveListeners();
+  toast('Atualizado');
+}
 
 function loadChaves(){ return _chavesCache; }
 function getChave(id){ return _chavesCache.find(c => c.id === id); }
@@ -1814,7 +1854,7 @@ setInterval(() => {
   if(h === '/' || h.indexOf('/pub') === 0) route();
 }, 20000);
 
-function header(title, sub, backHash, extra){
+function header(title, sub, backHash, extra, logoUrl){
   return `<div class="app-header">
     <div class="row">
       ${backHash!==null ? `<button class="back" onclick="location.hash='${backHash}'">‹</button>` : ''}
@@ -1822,6 +1862,7 @@ function header(title, sub, backHash, extra){
         <h1>${title}</h1>
         ${sub ? `<div class="sub">${sub}</div>` : ''}
       </div>
+      ${logoUrl ? `<img class="header-logo" src="${logoUrl}" alt="Logo do evento">` : ''}
     </div>
     ${extra || ''}
   </div>`;
@@ -1884,11 +1925,12 @@ function renderEventoSetup(editId){
   if(!eventoSetupState || eventoSetupState._editId !== (editId||null)){
     eventoSetupState = editing ? {
       _editId:editId, nome:editing.nome, edicao:editing.edicao||'', dataInicio:editing.dataInicio, dataFim:editing.dataFim,
-      fotoUrl:editing.fotoUrl||null, local:editing.local||'', contato:editing.contato||'', regras:editing.regras||''
-    } : { _editId:null, nome:'', edicao:'', dataInicio:'', dataFim:'', fotoUrl:null, local:'', contato:'', regras:'' };
+      fotoUrl:editing.fotoUrl||null, logoUrl:editing.logoUrl||null, local:editing.local||'', contato:editing.contato||'', regras:editing.regras||''
+    } : { _editId:null, nome:'', edicao:'', dataInicio:'', dataFim:'', fotoUrl:null, logoUrl:null, local:'', contato:'', regras:'' };
   }
   const s = eventoSetupState;
   const fotoPreview = s.fotoUrl ? `<img class="foto-upload-preview" src="${s.fotoUrl}">` : '';
+  const logoPreview = s.logoUrl ? `<img class="logo-upload-preview" src="${s.logoUrl}">` : '';
   app.innerHTML = `
     ${header(editing ? 'Editar evento' : 'Novo evento', null, editing ? ('/evento/'+editing.id) : '/organizador')}
     <div class="wrap">
@@ -1912,6 +1954,12 @@ function renderEventoSetup(editId){
         <button class="btn ghost small foto-upload-btn" onclick="document.getElementById('eventoFotoInput').click()">🖼 ${s.fotoUrl ? 'Trocar foto' : 'Escolher foto'}</button>
         <input type="file" id="eventoFotoInput" accept="image/*" style="display:none;" onchange="onEventoFotoSelected(event)">
         ${fotoPreview}
+        <label>Logomarca do evento (opcional)</label>
+        <div class="hint" style="margin-top:-2px;">Aparece no cabeçalho da página do evento e de todos os chaveamentos dessa competição.</div>
+        <button class="btn ghost small foto-upload-btn" onclick="document.getElementById('eventoLogoInput').click()">🏅 ${s.logoUrl ? 'Trocar logomarca' : 'Escolher logomarca'}</button>
+        <input type="file" id="eventoLogoInput" accept="image/*" style="display:none;" onchange="onEventoLogoSelected(event)">
+        ${logoPreview}
+        ${s.logoUrl ? `<button class="btn ghost small" style="margin-top:6px;" onclick="eventoSetupState.logoUrl=null; renderEventoSetup(eventoSetupState._editId||'')">Remover logomarca</button>` : ''}
       </div>
       <button class="btn" onclick="saveEventoSetup('${editId||''}')">${editing ? 'Salvar alterações' : 'Criar evento'}</button>
     </div>`;
@@ -1941,6 +1989,32 @@ function onEventoFotoSelected(e){
   reader.readAsDataURL(file);
   e.target.value = '';
 }
+// Mesmo esquema de redimensionar no navegador antes de salvar, só que bem
+// menor (é um selinho de ~50px no cabeçalho, não uma foto de capa) e como
+// PNG em vez de JPEG — logomarca costuma ter fundo transparente, e JPEG não
+// tem canal alpha (viraria um fundo branco/preto sólido por trás da logo).
+function onEventoLogoSelected(e){
+  const file = e.target.files && e.target.files[0];
+  if(!file) return;
+  const reader = new FileReader();
+  reader.onload = function(ev){
+    const img = new Image();
+    img.onload = function(){
+      const maxW = 300;
+      const scale = Math.min(1, maxW / img.width);
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.round(img.width * scale);
+      canvas.height = Math.round(img.height * scale);
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+      eventoSetupState.logoUrl = canvas.toDataURL('image/png');
+      renderEventoSetup(eventoSetupState._editId || '');
+    };
+    img.src = ev.target.result;
+  };
+  reader.readAsDataURL(file);
+  e.target.value = '';
+}
 function saveEventoSetup(editId){
   const s = eventoSetupState;
   if(!s.nome || !s.nome.trim()){ toast('Dê um nome para o evento'); return; }
@@ -1949,6 +2023,7 @@ function saveEventoSetup(editId){
   if(editId){
     const ev = getEvento(editId);
     ev.nome = s.nome.trim(); ev.edicao = s.edicao.trim(); ev.dataInicio = s.dataInicio; ev.dataFim = s.dataFim; ev.fotoUrl = s.fotoUrl || null;
+    ev.logoUrl = s.logoUrl || null;
     ev.local = s.local.trim(); ev.contato = s.contato.trim(); ev.regras = s.regras.trim();
     updateEvento(ev);
     toast('Evento atualizado');
@@ -1957,7 +2032,7 @@ function saveEventoSetup(editId){
     // Nasce em rascunho — só o organizador vê até clicar em "Publicar evento".
     const ev = {
       id:uid('e'), nome:s.nome.trim(), edicao:s.edicao.trim(), dataInicio:s.dataInicio, dataFim:s.dataFim,
-      fotoUrl:s.fotoUrl||null, local:s.local.trim(), contato:s.contato.trim(), regras:s.regras.trim(),
+      fotoUrl:s.fotoUrl||null, logoUrl:s.logoUrl||null, local:s.local.trim(), contato:s.contato.trim(), regras:s.regras.trim(),
       publicado:false, criadoEm:Date.now()
     };
     updateEvento(ev);
@@ -2033,7 +2108,7 @@ function renderEventoView(eventoId, selectedDia){
   }
 
   app.innerHTML = `
-    ${header(escapeHtml(ev.nome) + (publicado ? '' : ' <span class="rascunho-badge">RASCUNHO</span>'), ev.edicao ? escapeHtml(ev.edicao) : null, '/organizador', publishRow)}
+    ${header(escapeHtml(ev.nome) + (publicado ? '' : ' <span class="rascunho-badge">RASCUNHO</span>'), ev.edicao ? escapeHtml(ev.edicao) : null, '/organizador', publishRow, ev.logoUrl)}
     <div class="wrap">
       <button class="btn secondary" style="margin-bottom:14px; width:100%;" onclick="location.hash='/cronograma/${eventoId}/'+encodeURIComponent('${dia}')">🗓️ Cronograma de quadras</button>
       ${dayTabs}
@@ -2145,13 +2220,26 @@ function renderPubEventos(){
       ${body}
     </div>`;
 }
+// Filtro por dia na página pública do evento — pedido do Ed pra facilitar
+// achar os confrontos de um dia específico (sexta/sábado/domingo) num evento
+// com várias categorias espalhadas pelos dias, em vez de rolar a lista
+// inteira. "Todos" (dia===null) continua sendo o padrão — não muda o
+// comportamento de quem já está acostumado a ver tudo junto.
+let pubActiveDia = {};
+function setPubDia(eventoId, dia){ pubActiveDia[eventoId] = dia; renderPubEventoView(eventoId); }
 function renderPubEventoView(eventoId){
   const ev = getEvento(eventoId);
   if(!isEventoPublicado(ev)){ location.hash='/'; return; }
   const banner = ev.fotoUrl ? `<img class="evento-hero" src="${ev.fotoUrl}">` : '';
   const status = eventoStatusInfo(ev);
   const periodo = formatPeriodoLong(ev.dataInicio, ev.dataFim);
-  const items = categoriasOfEvento(eventoId);
+  const dias = diasOfEvento(ev);
+  const selectedDia = pubActiveDia[eventoId] || null;
+  const items = selectedDia ? categoriasOfDia(eventoId, selectedDia) : categoriasOfEvento(eventoId);
+  const pubDayTabs = dias.length > 1 ? `<div class="tabs" style="overflow-x:auto; margin-top:2px;">
+    <div class="tab ${!selectedDia?'active':''}" onclick="setPubDia('${eventoId}', null)">Todos</div>
+    ${dias.map(d => `<div class="tab ${d===selectedDia?'active':''}" onclick="setPubDia('${eventoId}','${d}')">${formatDiaLabelFull(d)}</div>`).join('')}
+  </div>` : '';
 
   const metaRow = `<div class="evt-meta-row">
     <span>📅 ${escapeHtml(periodo)}</span>
@@ -2188,10 +2276,10 @@ function renderPubEventoView(eventoId){
         </div>
       </div>`;
     }).join('')}
-  </div>` : `<div class="empty"><div class="big">🏐</div><div style="font-weight:700;">Nenhuma categoria criada ainda</div></div>`;
+  </div>` : `<div class="empty"><div class="big">🏐</div><div style="font-weight:700;">${selectedDia ? 'Nenhuma categoria nesse dia' : 'Nenhuma categoria criada ainda'}</div></div>`;
 
   app.innerHTML = `
-    ${header(escapeHtml(ev.nome), ev.edicao ? escapeHtml(ev.edicao) : null, '/')}
+    ${header(escapeHtml(ev.nome), ev.edicao ? escapeHtml(ev.edicao) : null, '/', '', ev.logoUrl)}
     ${banner}
     <div class="wrap">
       <div class="evt-title-row">
@@ -2204,6 +2292,7 @@ function renderPubEventoView(eventoId){
       ${orgCard}
       ${regrasCard}
       <div id="categoriasSection" class="section-title">🏆 Categorias</div>
+      ${pubDayTabs}
       ${catGrid}
       <button class="btn ghost" style="margin-top:14px;" onclick="location.hash='/'">‹ Todos os eventos</button>
     </div>`;
@@ -2266,6 +2355,7 @@ function renderPubChaveView(id){
   const cat = categoriaByChaveId(id);
   if(cat && !isEventoPublicado(getEvento(cat.eventoId))){ location.hash='/'; return; }
   const backHash = cat ? ('/pub/evento/'+cat.eventoId+'/'+encodeURIComponent(cat.data)) : '/';
+  const logoUrl = cat ? (getEvento(cat.eventoId)||{}).logoUrl : null;
   const games = effectiveGames(chave);
   const total = games.length;
   const done = games.filter(g => chave.resultados[g.num] && chave.resultados[g.num].vencedorSlot).length;
@@ -2287,13 +2377,14 @@ function renderPubChaveView(id){
   const rankingLink = `<div class="ranking-link" onclick="setPubTab('${id}','__ranking__')">🏁 Ver ranking final</div>`;
 
   const headerExtra = `<span class="pub-badge">👁 Modo público — só leitura</span>
+    <span class="pub-badge pub-refresh" onclick="manualRefreshPub()">🔄 Atualizar</span>
     <div class="progress-bar-wrap"><div class="progress-bar-fill" style="width:${pct}%"></div></div>`;
 
   const viewToggle = viewToggleHtml(id, true);
 
   if(tab === '__ranking__'){
     app.innerHTML = `
-      ${header(escapeHtml(chave.nome), chave.numTimes + ' ' + (chave.modalidade==='quarteto' ? 'quartetos' : 'duplas') + ' • dupla eliminatória', backHash, headerExtra)}
+      ${header(escapeHtml(chave.nome), chave.numTimes + ' ' + (chave.modalidade==='quarteto' ? 'quartetos' : 'duplas') + ' • dupla eliminatória', backHash, headerExtra, logoUrl)}
       <div class="wrap">
         <div class="ranking-link" onclick="setPubTab('${id}','todas')">⬅ Voltar à lista de jogos</div>
         ${renderFinalRankingView(chave, fullRanking, total, done)}
@@ -2303,7 +2394,7 @@ function renderPubChaveView(id){
 
   if(getViewMode() === 'arvore'){
     app.innerHTML = `
-      ${header(escapeHtml(chave.nome), chave.numTimes + ' ' + (chave.modalidade==='quarteto' ? 'quartetos' : 'duplas') + ' • dupla eliminatória', backHash, headerExtra)}
+      ${header(escapeHtml(chave.nome), chave.numTimes + ' ' + (chave.modalidade==='quarteto' ? 'quartetos' : 'duplas') + ' • dupla eliminatória', backHash, headerExtra, logoUrl)}
       <div class="wrap">
         ${viewToggle}
         ${treeSectionHtml(chave, true)}
@@ -2338,7 +2429,7 @@ function renderPubChaveView(id){
   }).join('');
 
   app.innerHTML = `
-    ${header(escapeHtml(chave.nome), chave.numTimes + ' ' + (chave.modalidade==='quarteto' ? 'quartetos' : 'duplas') + ' • dupla eliminatória', backHash, headerExtra)}
+    ${header(escapeHtml(chave.nome), chave.numTimes + ' ' + (chave.modalidade==='quarteto' ? 'quartetos' : 'duplas') + ' • dupla eliminatória', backHash, headerExtra, logoUrl)}
     <div class="wrap">
       ${viewToggle}
       ${rankingLink}
@@ -3281,6 +3372,8 @@ function renderChaveView(id){
   if(!chave){ location.hash='/organizador'; return; }
   const backHash = chaveBackHash(id);
   const switcher = categorySwitcherHtml(id);
+  const _cat = categoriaByChaveId(id);
+  const logoUrl = _cat ? (getEvento(_cat.eventoId)||{}).logoUrl : null;
   const games = effectiveGames(chave);
   const total = games.length;
   const done = games.filter(g => chave.resultados[g.num] && chave.resultados[g.num].vencedorSlot).length;
@@ -3309,7 +3402,7 @@ function renderChaveView(id){
       ${header(escapeHtml(chave.nome), chave.numTimes + ' ' + (chave.modalidade==='quarteto' ? 'quartetos' : 'duplas') + ' • dupla eliminatória', backHash, `
         ${switcher}
         <div class="progress-bar-wrap"><div class="progress-bar-fill" style="width:${pct}%"></div></div>
-      `)}
+      `, logoUrl)}
       <div class="wrap">
         <div class="ranking-link" onclick="setTab('${id}','todas')">⬅ Voltar à lista de jogos</div>
         ${renderFinalRankingView(chave, fullRanking, total, done)}
@@ -3328,7 +3421,7 @@ function renderChaveView(id){
       ${header(escapeHtml(chave.nome), chave.numTimes + ' ' + (chave.modalidade==='quarteto' ? 'quartetos' : 'duplas') + ' • dupla eliminatória', backHash, `
         ${switcher}
         <div class="progress-bar-wrap"><div class="progress-bar-fill" style="width:${pct}%"></div></div>
-      `)}
+      `, logoUrl)}
       <div class="wrap">
         ${viewToggle}
         ${treeSectionHtml(chave, false)}
@@ -3370,7 +3463,7 @@ function renderChaveView(id){
     ${header(escapeHtml(chave.nome), chave.numTimes + ' ' + (chave.modalidade==='quarteto' ? 'quartetos' : 'duplas') + ' • dupla eliminatória', backHash, `
       ${switcher}
       <div class="progress-bar-wrap"><div class="progress-bar-fill" style="width:${pct}%"></div></div>
-    `)}
+    `, logoUrl)}
     <div class="wrap">
       ${viewToggle}
       ${rankingLink}
@@ -4226,21 +4319,42 @@ function renderTreeView(chave, readOnly){
       <span class="hint">Arraste para navegar • pinça ou Ctrl+scroll pra zoom</span>
     </div>
     <div class="tree-scroll" id="treeScroll">
-      <div class="tree-canvas" id="treeCanvas" style="width:${svgW}px; height:${svgH}px;">
-        <svg class="tree-svg" width="${svgW}" height="${svgH}">${connectors}</svg>
-        ${midlineHtml}
-        ${headersHtml}
-        ${boxesHtml}
+      <div class="tree-canvas-wrap" id="treeCanvasWrap" style="width:${svgW}px; height:${svgH}px;">
+        <div class="tree-canvas" id="treeCanvas" style="width:${svgW}px; height:${svgH}px;">
+          <svg class="tree-svg" width="${svgW}" height="${svgH}">${connectors}</svg>
+          ${midlineHtml}
+          ${headersHtml}
+          ${boxesHtml}
+        </div>
       </div>
     </div>
   </div>`;
 }
 
+// Zoom da árvore via CSS transform:scale (não a propriedade não-padrão
+// "zoom"). O Safari do iPhone tem um bug documentado onde "zoom" escala o
+// font-size na direção ERRADA (um texto de 20px com zoom:50% vira 40px em
+// vez de 10px) — exatamente o que o Ed reportou: reduzindo o zoom da árvore
+// no celular, o texto ficava maior que a caixinha e transbordava pra fora
+// dela. transform:scale não tem esse bug e é suportado de forma consistente
+// em todo navegador relevante. Como transform não redimensiona a "caixa" do
+// elemento pro layout/scroll (só o visual), um wrapper com o tamanho já
+// multiplicado pela escala garante que a área de rolagem acompanhe o zoom
+// em vez de sobrar/faltar espaço em branco ao redor do canvas encolhido.
 let treeZoomLevel = 100;
 function applyTreeZoom(){
   const canvas = document.getElementById('treeCanvas');
+  const wrap = document.getElementById('treeCanvasWrap');
   const pct = document.getElementById('treeZoomPct');
-  if(canvas) canvas.style.zoom = treeZoomLevel + '%';
+  const scale = treeZoomLevel / 100;
+  if(canvas){
+    canvas.style.transform = 'scale(' + scale + ')';
+    if(wrap){
+      const baseW = canvas.offsetWidth, baseH = canvas.offsetHeight;
+      wrap.style.width = (baseW * scale) + 'px';
+      wrap.style.height = (baseH * scale) + 'px';
+    }
+  }
   if(pct) pct.textContent = treeZoomLevel + '%';
 }
 function treeZoom(dir){
