@@ -46,8 +46,21 @@ button{font-family:inherit;}
   box-shadow:0 2px 10px rgba(0,0,0,.12);
 }
 .app-header .row{display:flex; align-items:center; gap:10px;}
-.header-logo{width:40px; height:40px; border-radius:9px; object-fit:contain; background:rgba(255,255,255,.9); flex:none; padding:3px;}
-@media (min-width:640px){ .header-logo{width:52px; height:52px; border-radius:11px; padding:4px;} }
+.header-edicao{font-weight:500; opacity:.85; font-size:.8em;}
+.header-logo{width:64px; height:64px; object-fit:contain; flex:none;}
+@media (min-width:640px){ .header-logo{width:84px; height:84px;} }
+.regras-text{font-size:13.5px; line-height:1.5; color:var(--text);}
+.regras-text.collapsed{max-height:76px; overflow:hidden; position:relative;}
+.regras-text.collapsed::after{content:''; position:absolute; left:0; right:0; bottom:0; height:32px; background:linear-gradient(transparent, var(--card));}
+.regras-toggle{font-size:12.5px; font-weight:700; color:var(--primary); cursor:pointer; margin-top:6px; text-align:center;}
+.atleta-row{display:flex; gap:10px; align-items:center; padding:9px 0; border-bottom:1px solid var(--border);}
+.atleta-row:last-child{border-bottom:none;}
+.atleta-row .rk{
+  width:34px; height:34px; border-radius:9px; background:var(--primary); color:#fff;
+  display:flex; align-items:center; justify-content:center; font-size:12px; font-weight:700; flex:none;
+}
+.atleta-time-nome{font-weight:700; font-size:14px;}
+.atleta-nomes{font-size:13px; color:var(--muted2);}
 .app-header .back{
   background:rgba(255,255,255,.18); border:none; color:#fff; width:34px;height:34px;border-radius:10px;
   font-size:18px; display:flex; align-items:center; justify-content:center; flex:none; cursor:pointer;
@@ -224,8 +237,8 @@ input[type=number]{text-align:center;}
 .pub-refresh:active{background:rgba(255,255,255,.35);}
 .view-toggle{display:flex; gap:6px; margin-bottom:10px;}
 .view-toggle .vt-opt{
-  flex:1; text-align:center; padding:9px 4px; border-radius:11px; border:1.5px solid var(--border);
-  background:#fff; font-size:13px; font-weight:700; color:var(--muted2); cursor:pointer;
+  flex:1; text-align:center; padding:8px 3px; border-radius:11px; border:1.5px solid var(--border);
+  background:#fff; font-size:12px; font-weight:700; color:var(--muted2); cursor:pointer; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
 }
 .view-toggle .vt-opt.selected{border-color:var(--primary); background:#eaf0fe; color:var(--primary-dark);}
 .tree-wrap{border:1px solid var(--border); border-radius:13px; overflow:hidden; background:#fbfbf9; margin-bottom:14px;}
@@ -984,6 +997,13 @@ if(typeof window !== 'undefined' && window.addEventListener){
 function manualRefreshPub(){
   attachLiveListeners();
   toast('Atualizado');
+}
+function toggleRegras(){
+  const el = document.getElementById('regrasText');
+  const btn = document.getElementById('regrasToggle');
+  if(!el || !btn) return;
+  const nowCollapsed = el.classList.toggle('collapsed');
+  btn.textContent = nowCollapsed ? 'Ler mais ▾' : 'Ler menos ▴';
 }
 
 function loadChaves(){ return _chavesCache; }
@@ -2258,9 +2278,14 @@ function renderPubEventoView(eventoId){
     <div class="info-row"><span class="ico">📞</span><div><div class="ir-label">Contato</div><div class="ir-value">${escapeHtml(ev.contato)}</div></div></div>
   </div>` : '';
 
+  // Regras costuma ser um texto longo (regulamento completo) — pedido do Ed
+  // pra não pesar a página principal do evento com tudo isso já aberto:
+  // começa recolhido (algumas linhas + degradê) com um "Ler mais" que expande
+  // o texto inteiro sem sair da tela.
   const regrasCard = ev.regras ? `<div class="card">
     <div class="card-title">📄 Regras do Campeonato</div>
-    <div class="ir-value" style="white-space:pre-wrap;">${escapeHtml(ev.regras)}</div>
+    <div class="regras-text collapsed" id="regrasText" style="white-space:pre-wrap;">${escapeHtml(ev.regras)}</div>
+    <div class="regras-toggle" id="regrasToggle" onclick="toggleRegras()">Ler mais ▾</div>
   </div>` : '';
 
   const catGrid = items.length ? `<div class="cat-grid">
@@ -2279,7 +2304,7 @@ function renderPubEventoView(eventoId){
   </div>` : `<div class="empty"><div class="big">🏐</div><div style="font-weight:700;">${selectedDia ? 'Nenhuma categoria nesse dia' : 'Nenhuma categoria criada ainda'}</div></div>`;
 
   app.innerHTML = `
-    ${header(escapeHtml(ev.nome), ev.edicao ? escapeHtml(ev.edicao) : null, '/', '', ev.logoUrl)}
+    ${header(escapeHtml(ev.nome) + (ev.edicao ? ' <span class="header-edicao">— '+escapeHtml(ev.edicao)+'</span>' : ''), null, '/', '', ev.logoUrl)}
     ${banner}
     <div class="wrap">
       <div class="evt-title-row">
@@ -2388,6 +2413,16 @@ function renderPubChaveView(id){
       <div class="wrap">
         <div class="ranking-link" onclick="setPubTab('${id}','todas')">⬅ Voltar à lista de jogos</div>
         ${renderFinalRankingView(chave, fullRanking, total, done)}
+      </div>`;
+    return;
+  }
+
+  if(getViewMode() === 'atletas'){
+    app.innerHTML = `
+      ${header(escapeHtml(chave.nome), chave.numTimes + ' ' + (chave.modalidade==='quarteto' ? 'quartetos' : 'duplas') + ' • dupla eliminatória', backHash, headerExtra, logoUrl)}
+      <div class="wrap">
+        ${viewToggle}
+        ${renderAtletasListHtml(chave)}
       </div>`;
     return;
   }
@@ -3396,6 +3431,13 @@ function renderChaveView(id){
   const fullRanking = computeFullRanking(chave);
 
   const rankingLink = `<div class="ranking-link" onclick="setTab('${id}','__ranking__')">🏁 Ver ranking final</div>`;
+  // Editar duplas / Zerar placares — movidos pro topo da tela a pedido do Ed
+  // (antes ficavam lá embaixo, depois de rolar toda a lista de jogos ou a
+  // árvore inteira).
+  const topActions = `<div class="footer-actions" style="margin-bottom:12px;">
+    <button class="btn secondary" onclick="location.hash='/editar/${chave.id}'">Editar ${chave.modalidade==='quarteto'?'times':'duplas'}</button>
+    <button class="btn ghost" onclick="resetResults('${chave.id}')">Zerar placares</button>
+  </div>`;
 
   if(tab === '__ranking__'){
     app.innerHTML = `
@@ -3404,17 +3446,28 @@ function renderChaveView(id){
         <div class="progress-bar-wrap"><div class="progress-bar-fill" style="width:${pct}%"></div></div>
       `, logoUrl)}
       <div class="wrap">
+        ${topActions}
         <div class="ranking-link" onclick="setTab('${id}','todas')">⬅ Voltar à lista de jogos</div>
         ${renderFinalRankingView(chave, fullRanking, total, done)}
-        <div class="footer-actions">
-          <button class="btn secondary" onclick="location.hash='/editar/${chave.id}'">Editar times</button>
-          <button class="btn ghost" onclick="resetResults('${chave.id}')">Zerar placares</button>
-        </div>
       </div>`;
     return;
   }
 
   const viewToggle = viewToggleHtml(id, false);
+
+  if(getViewMode() === 'atletas'){
+    app.innerHTML = `
+      ${header(escapeHtml(chave.nome), chave.numTimes + ' ' + (chave.modalidade==='quarteto' ? 'quartetos' : 'duplas') + ' • dupla eliminatória', backHash, `
+        ${switcher}
+        <div class="progress-bar-wrap"><div class="progress-bar-fill" style="width:${pct}%"></div></div>
+      `, logoUrl)}
+      <div class="wrap">
+        ${topActions}
+        ${viewToggle}
+        ${renderAtletasListHtml(chave)}
+      </div>`;
+    return;
+  }
 
   if(getViewMode() === 'arvore'){
     app.innerHTML = `
@@ -3423,12 +3476,9 @@ function renderChaveView(id){
         <div class="progress-bar-wrap"><div class="progress-bar-fill" style="width:${pct}%"></div></div>
       `, logoUrl)}
       <div class="wrap">
+        ${topActions}
         ${viewToggle}
         ${treeSectionHtml(chave, false)}
-        <div class="footer-actions">
-          <button class="btn secondary" onclick="location.hash='/editar/${chave.id}'">Editar duplas</button>
-          <button class="btn ghost" onclick="resetResults('${chave.id}')">Zerar placares</button>
-        </div>
       </div>`;
     setTimeout(setupTreePanZoom, 0);
     return;
@@ -3465,15 +3515,12 @@ function renderChaveView(id){
       <div class="progress-bar-wrap"><div class="progress-bar-fill" style="width:${pct}%"></div></div>
     `, logoUrl)}
     <div class="wrap">
+      ${topActions}
       ${viewToggle}
       ${rankingLink}
       ${podium}
       ${groupCard}
       ${sections}
-      <div class="footer-actions">
-        <button class="btn secondary" onclick="location.hash='/editar/${chave.id}'">Editar duplas</button>
-        <button class="btn ghost" onclick="resetResults('${chave.id}')">Zerar placares</button>
-      </div>
     </div>`;
 }
 
@@ -4425,8 +4472,42 @@ function setViewMode(m, chaveId, readOnly){
 function viewToggleHtml(chaveId, readOnly){
   const vm = getViewMode();
   return `<div class="view-toggle">
-    <div class="vt-opt ${vm==='lista'?'selected':''}" onclick="setViewMode('lista','${chaveId}',${!!readOnly})">📋 Lista</div>
+    <div class="vt-opt ${vm==='atletas'?'selected':''}" onclick="setViewMode('atletas','${chaveId}',${!!readOnly})">🧑‍🤝‍🧑 Atletas</div>
+    <div class="vt-opt ${vm==='lista'?'selected':''}" onclick="setViewMode('lista','${chaveId}',${!!readOnly})">📋 Confrontos</div>
     <div class="vt-opt ${vm==='arvore'?'selected':''}" onclick="setViewMode('arvore','${chaveId}',${!!readOnly})">🌳 Árvore</div>
+  </div>`;
+}
+// Lista de atletas/duplas/times na ordem em que entraram no sorteio (R1 =
+// cabeça de chave, R2, R3...) — pedido do Ed pra dar pro público uma aba só
+// com quem está inscrito, sem precisar catar isso jogo por jogo na lista de
+// confrontos ou tentar ler da árvore.
+function renderAtletasListHtml(chave){
+  const n = chave.times ? chave.times.length : 0;
+  if(!n) return `<div class="empty"><div class="big">🧑‍🤝‍🧑</div><div style="font-weight:700;">Nenhum time cadastrado ainda</div></div>`;
+  const isQuarteto = chave.modalidade === 'quarteto';
+  const rows = Array.from({length:n}, (_,i) => {
+    const t = chave.times[i] || {};
+    if(isQuarteto){
+      const nomeTime = (t.nome||'').trim() || teamLabel(chave, i) || 'A definir';
+      const atletas = (t.atletas||[]).map(a=>(a||'').trim()).filter(Boolean);
+      return `<div class="atleta-row">
+        <div class="rk">R${i+1}</div>
+        <div style="flex:1; min-width:0;">
+          <div class="atleta-time-nome">${escapeHtml(nomeTime)}</div>
+          ${atletas.length ? `<div class="atleta-nomes">${atletas.map(a=>escapeHtml(a)).join(' · ')}</div>` : ''}
+        </div>
+      </div>`;
+    }
+    const a1 = (t.atleta1||'').trim(), a2 = (t.atleta2||'').trim();
+    const label = (a1 && a2) ? (a1 + ' / ' + a2) : (a1 || a2 || 'A definir');
+    return `<div class="atleta-row">
+      <div class="rk">R${i+1}</div>
+      <div class="atleta-nomes" style="flex:1;">${escapeHtml(label)}</div>
+    </div>`;
+  }).join('');
+  return `<div class="card">
+    <div class="card-title">Lista de ${isQuarteto ? 'times' : 'duplas'} (ordem do sorteio)</div>
+    ${rows}
   </div>`;
 }
 function treeSectionHtml(chave, readOnly){
