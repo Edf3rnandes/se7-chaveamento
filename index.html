@@ -1698,44 +1698,149 @@ function gerarCronograma(ev, items, quadras, horaInicioStr){
   const fimMin = slots.length ? Math.max(...slots.map(s=>s.fim)) : inicio;
   return { slots, fimMin, ok:true };
 }
-// ---------- grade por categoria (quadras dedicadas) ----------
+// ---------- grade por categoria (quadras dedicadas, com "degraus") ----------
 // Modelo pedido pelo Ed depois de ver os jogos "misturados" livremente pela
 // mesma quadra (categoria A num horário, categoria B no seguinte, categoria
-// A de novo): cada categoria reserva um número FIXO de quadras só pra ela
-// (editável — quantas quadras + que horas começa), nunca dividindo a mesma
-// quadra com outra categoria ao mesmo tempo. Dentro do bloco de quadras
-// escolhido pra uma categoria, os jogos INDIVIDUAIS dela (respeitando
-// dependência e o limite de 2 simultâneos nas fases finais) são posicionados
-// simulando aquela chave sozinha, com gerarCronograma, só nas quadras
-// escolhidas — depois os índices de quadra "virtuais" da simulação são
-// remapeados pros índices REAIS escolhidos. Devolve uma lista achatada de
-// jogos (mesmo formato de gerarCronograma().slots), pronta pra desenhar a
-// grade com uma célula pequena por partida.
+// A de novo): cada categoria usa um NÚMERO DE QUADRAS PRÓPRIO (editável —
+// quantas quadras + que horas começa), nunca dividindo a mesma quadra com
+// outra categoria NO MESMO INSTANTE. Ago/2026: o Ed pediu pra esse número
+// poder MUDAR ao longo do dia por categoria — ex. "Pais e Filhos" começa com
+// 2 quadras e ganha uma 3ª a partir das 15h30 (se estiver livre nessa hora);
+// "Adulto Iniciante" começa com 4, sobe pra 5 às 10h e desce pra 2 nas fases
+// finais. Isso vira uma lista de "degraus" por categoria (cat.quadraSteps —
+// [{horaInicio, quadras}, ...]) além do quadras/horaInicio simples de antes
+// (que continua funcionando normalmente pra quem não usa degraus).
+//
+// Pra dar pra "devolver" uma quadra ociosa pra outra categoria pegar assim
+// que ela libera (em vez de reservar tudo cego desde o início do dia), as
+// quadras de TODAS as categorias do dia são simuladas juntas numa única
+// simulação por ondas (como o antigo gerarCronograma fazia antes do pedido
+// de quadra dedicada) — só que agora cada categoria tem uma COTA de quadras
+// simultâneas que pode variar com o tempo (era fixa em "sempre 2" só nas
+// fases finais; virou geral, dirigida pelos degraus). Cada categoria tenta
+// primeiro reaproveitar as quadras que "já são dela" (pra não ficar pulando
+// de quadra à toa); só reivindica uma quadra nova (sem dono no momento) se
+// ainda não bateu a cota — e assim que sua cota cai (fim, degrau de descida,
+// fases finais) ou ela termina os jogos, devolve o excesso, que fica livre
+// pra qualquer outra categoria reivindicar.
+function normalizeCategoriaSteps(cat, quadrasTotais, inicioDia){
+  const start = Math.max(inicioDia, hhmmToMin(cat.horaInicio) ?? inicioDia);
+  const clampN = n => Math.max(1, Math.min(quadrasTotais, Math.round(n) || 1));
+  const custom = (Array.isArray(cat.quadraSteps) ? cat.quadraSteps : [])
+    .filter(s => s && s.quadras && hhmmToMin(s.horaInicio) != null)
+    .map(s => ({ at: Math.max(inicioDia, hhmmToMin(s.horaInicio)), quadras: clampN(s.quadras) }))
+    .sort((a,b) => a.at - b.at);
+  let steps;
+  if(!custom.length || custom[0].at > start){
+    steps = [{ at: start, quadras: clampN(cat.quadras || 1) }].concat(custom);
+  } else {
+    // já existe um degrau bem na hora de início (ou antes) — ele que manda
+    // a partir do início, ajustado pra não começar antes da categoria.
+    steps = custom.slice();
+    steps[0] = { at: start, quadras: steps[0].quadras };
+  }
+  // funde degraus repetidos no mesmo horário (o último definido vence) e
+  // remove degraus que não mudam nada em relação ao anterior.
+  const merged = [];
+  steps.forEach(s => {
+    if(merged.length && merged[merged.length-1].at === s.at) merged[merged.length-1] = s;
+    else if(!merged.length || merged[merged.length-1].quadras !== s.quadras) merged.push(s);
+    else if(s.at > merged[merged.length-1].at) { /* mesmo valor, degrau redundante — ignora */ }
+  });
+  return merged.length ? merged : [{ at: start, quadras: clampN(cat.quadras || 1) }];
+}
+function quadrasAtStep(steps, t){
+  let n = steps[0].quadras;
+  for(const s of steps){ if(s.at <= t) n = s.quadras; else break; }
+  return n;
+}
 function gerarGradeDia(ev, items, quadrasTotais, horaInicioDiaStr){
   const inicioDia = hhmmToMin(horaInicioDiaStr) ?? 8*60;
   if(!quadrasTotais || quadrasTotais < 1) return { jogos: [], fimMin: inicioDia };
+
+  const porCat = items.map(({cat, chave}) => ({
+    cat, chave,
+    steps: normalizeCategoriaSteps(cat, quadrasTotais, inicioDia),
+    pendentes: effectiveGames(chave).slice().sort((a,b) => a.num - b.num),
+    fimDe: {},       // gnum -> minuto em que termina (previsto)
+    colunas: [],      // índices de quadra REAL que essa categoria tem "presos" agora
+  }));
+
   const quadraFreeAt = Array(quadrasTotais).fill(inicioDia);
-  // categorias entram na ordem do horário que cada uma pediu (em branco =
-  // começa assim que possível), com empate por nome
-  const ordenado = items.slice().sort((a,b) => {
-    const ta = hhmmToMin(a.cat.horaInicio) ?? inicioDia;
-    const tb = hhmmToMin(b.cat.horaInicio) ?? inicioDia;
-    return (ta - tb) || a.chave.nome.localeCompare(b.chave.nome, 'pt-BR', { sensitivity:'base' });
-  });
+  const quadraDono = Array(quadrasTotais).fill(null); // pc atual dona da quadra, ou null (livre pra qualquer um pegar)
+
+  function liberarExcesso(pc, quota){
+    while(pc.colunas.length > quota){
+      // solta a quadra mais ociosa (a que já está livre há mais tempo) —
+      // não tem jogo futuro dela reservado, é a que "sobra".
+      let pior = pc.colunas[0];
+      for(const i of pc.colunas) if(quadraFreeAt[i] < quadraFreeAt[pior]) pior = i;
+      pc.colunas = pc.colunas.filter(i => i !== pior);
+      if(quadraDono[pior] === pc) quadraDono[pior] = null;
+    }
+  }
+  function escolherQuadra(pc, quota, earliest){
+    liberarExcesso(pc, quota);
+    const candidatas = pc.colunas.slice();
+    if(pc.colunas.length < quota){
+      for(let i=0; i<quadraFreeAt.length; i++){
+        if(quadraDono[i] === null && !candidatas.includes(i)) candidatas.push(i);
+      }
+    }
+    if(!candidatas.length){
+      // não deveria acontecer (toda quadra tem dono e a cota já é 0?) — usa
+      // qualquer uma pra não travar a simulação.
+      for(let i=0;i<quadraFreeAt.length;i++) candidatas.push(i);
+    }
+    let idx = candidatas[0];
+    for(const i of candidatas) if(quadraFreeAt[i] < quadraFreeAt[idx]) idx = i;
+    if(!pc.colunas.includes(idx)){ pc.colunas.push(idx); }
+    quadraDono[idx] = pc;
+    return idx;
+  }
+
   const jogos = [];
-  ordenado.forEach(({cat, chave}) => {
-    const desiredN = Math.max(1, Math.min(cat.quadras || 1, quadrasTotais));
-    const desiredStart = Math.max(inicioDia, hhmmToMin(cat.horaInicio) ?? inicioDia);
-    // escolhe as N quadras que ficam livres mais cedo
-    const porQuadra = quadraFreeAt.map((t,i) => ({ i, t })).sort((a,b) => (a.t-b.t) || (a.i-b.i));
-    const escolhidas = porQuadra.slice(0, desiredN).map(x => x.i).sort((a,b) => a-b);
-    const earliestReady = Math.max(desiredStart, ...escolhidas.map(i => quadraFreeAt[i]));
-    // simula essa chave sozinha, com N quadras "virtuais" só dela
-    const sim = gerarCronograma(ev, [{ cat, chave }], desiredN, minToHHMM(earliestReady));
-    sim.slots.forEach(s => { jogos.push(Object.assign({}, s, { quadraIdx: escolhidas[s.quadraIdx] })); });
-    const fim = sim.slots.length ? Math.max(...sim.slots.map(s => s.fim)) : earliestReady;
-    escolhidas.forEach(i => { quadraFreeAt[i] = fim; });
-  });
+  const totalJogos = porCat.reduce((s,pc) => s + pc.pendentes.length, 0);
+  let guard = 0;
+  while(jogos.length < totalJogos && guard < totalJogos + 1000){
+    guard++;
+    const prontos = [];
+    porCat.forEach(pc => {
+      pc.pendentes.forEach(g => {
+        const deps = gameDeps(pc.chave, g);
+        if(deps.every(d => pc.fimDe[d] !== undefined)){
+          const depEarliest = deps.length ? Math.max(...deps.map(d => pc.fimDe[d])) : pc.steps[0].at;
+          prontos.push({ pc, g, depEarliest });
+        }
+      });
+    });
+    if(!prontos.length) break; // dependência não resolvida — não deveria acontecer, sai pra não travar
+    prontos.sort((a,b) => (a.depEarliest - b.depEarliest) || (a.g.num - b.g.num));
+    prontos.forEach(({pc, g, depEarliest}) => {
+      let earliest = Math.max(depEarliest, pc.steps[0].at);
+      // Fases finais: nunca mais de 2 jogos da MESMA categoria ao mesmo
+      // tempo enquanto restam menos de 4 pra fechar (mesma regra de antes —
+      // ver gerarCronograma) — independente da cota de quadras configurada.
+      if(pc.pendentes.length < 4){
+        const finsDesc = jogos.filter(s => s.chaveId === pc.chave.id).map(s => s.fim).sort((a,b) => b-a);
+        if(finsDesc.length >= 2) earliest = Math.max(earliest, finsDesc[1]);
+      }
+      const quota = quadrasAtStep(pc.steps, earliest);
+      const idx = escolherQuadra(pc, quota, earliest);
+      const startAt = Math.max(quadraFreeAt[idx], earliest);
+      const dur = duracaoJogo(ev, g);
+      const fim = startAt + dur;
+      jogos.push({ chaveId: pc.chave.id, categoria: pc.chave.nome, gnum: g.num, fase: g.fase, quadraIdx: idx, inicio: startAt, fim });
+      quadraFreeAt[idx] = fim;
+      pc.fimDe[g.num] = fim;
+      pc.pendentes = pc.pendentes.filter(x => x.num !== g.num);
+      if(pc.pendentes.length === 0){
+        // categoria terminou — devolve todas as quadras dela pro pool.
+        pc.colunas.forEach(i => { if(quadraDono[i] === pc) quadraDono[i] = null; });
+        pc.colunas = [];
+      }
+    });
+  }
   const fimMin = jogos.length ? Math.max(...jogos.map(j => j.fim)) : inicioDia;
   return { jogos, fimMin };
 }
@@ -1744,6 +1849,32 @@ function setCategoriaConfig(catId, patch){
   if(!cat) return;
   Object.assign(cat, patch);
   updateCategoria(cat);
+}
+// Degraus de quadras ao longo do dia pra uma categoria (cat.quadraSteps —
+// [{horaInicio, quadras}, ...]), além do quadras/horaInicio simples de
+// sempre — pedido do Ed pra poder aumentar (ou diminuir, nas fases finais)
+// o número de quadras de uma categoria a partir de um horário específico.
+function addCategoriaStep(catId){
+  const cat = getCategoria(catId);
+  if(!cat) return;
+  const steps = (cat.quadraSteps || []).slice();
+  steps.push({ horaInicio:'', quadras: cat.quadras || 1 });
+  setCategoriaConfig(catId, { quadraSteps: steps });
+}
+function setCategoriaStep(catId, idx, patch){
+  const cat = getCategoria(catId);
+  if(!cat) return;
+  const steps = (cat.quadraSteps || []).slice();
+  if(!steps[idx]) return;
+  steps[idx] = Object.assign({}, steps[idx], patch);
+  setCategoriaConfig(catId, { quadraSteps: steps });
+}
+function removeCategoriaStep(catId, idx){
+  const cat = getCategoria(catId);
+  if(!cat) return;
+  const steps = (cat.quadraSteps || []).slice();
+  steps.splice(idx, 1);
+  setCategoriaConfig(catId, { quadraSteps: steps });
 }
 function getDiaConfig(ev, data){
   const c = (ev.diasConfig && ev.diasConfig[data]) || {};
@@ -3081,22 +3212,37 @@ function renderCronogramaPlanner(eventoId, dia, ev, dc, items){
   // quadras pra aquela categoria, que horas ela inicia".
   const configCategorias = `<div class="card">
     <div class="card-title" style="margin-bottom:4px;">Quadras por categoria</div>
-    <div class="hint" style="margin:0 0 8px;">Cada categoria ocupa suas próprias quadras — os jogos dela não se misturam com os de outra categoria.</div>
-    ${items.map(({cat, chave}) => `
-      <div style="display:flex; align-items:center; gap:8px; padding:8px 0; border-bottom:1px solid var(--border); flex-wrap:wrap;">
-        <div style="flex:1; min-width:140px;">
-          <div style="font-weight:700; font-size:13px;">${escapeHtml(chave.nome)}</div>
-          <div class="hint" style="margin:0;">${chave.numTimes} ${chave.modalidade==='quarteto'?'times':'duplas'} · ${effectiveGames(chave).length} jogos</div>
+    <div class="hint" style="margin:0 0 8px;">Cada categoria ocupa suas próprias quadras — os jogos dela não se misturam com os de outra categoria no mesmo horário. Dá pra mudar a quantidade de quadras ao longo do dia (ex: começa com 2, ganha mais uma a partir de um horário) em "+ mudar quadras num horário".</div>
+    ${items.map(({cat, chave}) => {
+      const steps = (cat.quadraSteps || []).slice();
+      const stepsHtml = steps.map((s,i) => `
+        <div style="display:flex; align-items:center; gap:6px; margin-top:5px;">
+          <span class="hint" style="margin:0; white-space:nowrap;">a partir das</span>
+          <input type="time" value="${escapeHtmlAttr(s.horaInicio)}" style="width:92px;" oninput="setCategoriaStep('${cat.id}',${i},{horaInicio:this.value}); renderCronograma('${eventoId}','${dia}')">
+          <input type="number" min="1" step="1" value="${s.quadras||1}" style="width:52px;" oninput="setCategoriaStep('${cat.id}',${i},{quadras:Math.max(1,parseInt(this.value,10)||1)}); renderCronograma('${eventoId}','${dia}')">
+          <span class="hint" style="margin:0; white-space:nowrap;">quadras</span>
+          <button class="del-btn" style="padding:2px 6px;" onclick="removeCategoriaStep('${cat.id}',${i}); renderCronograma('${eventoId}','${dia}')">✕</button>
+        </div>`).join('');
+      return `
+      <div style="padding:8px 0; border-bottom:1px solid var(--border);">
+        <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+          <div style="flex:1; min-width:140px;">
+            <div style="font-weight:700; font-size:13px;">${escapeHtml(chave.nome)}</div>
+            <div class="hint" style="margin:0;">${chave.numTimes} ${chave.modalidade==='quarteto'?'times':'duplas'} · ${effectiveGames(chave).length} jogos</div>
+          </div>
+          <div style="width:78px;">
+            <label style="font-size:10px;">Quadras</label>
+            <input type="number" min="1" step="1" value="${cat.quadras||1}" oninput="setCategoriaConfig('${cat.id}',{quadras:Math.max(1,parseInt(this.value,10)||1)}); renderCronograma('${eventoId}','${dia}')">
+          </div>
+          <div style="width:110px;">
+            <label style="font-size:10px;">Início</label>
+            <input type="time" value="${escapeHtmlAttr(cat.horaInicio||dc.horaInicio)}" oninput="setCategoriaConfig('${cat.id}',{horaInicio:this.value}); renderCronograma('${eventoId}','${dia}')">
+          </div>
         </div>
-        <div style="width:78px;">
-          <label style="font-size:10px;">Quadras</label>
-          <input type="number" min="1" step="1" value="${cat.quadras||1}" oninput="setCategoriaConfig('${cat.id}',{quadras:Math.max(1,parseInt(this.value,10)||1)}); renderCronograma('${eventoId}','${dia}')">
-        </div>
-        <div style="width:110px;">
-          <label style="font-size:10px;">Início</label>
-          <input type="time" value="${escapeHtmlAttr(cat.horaInicio||dc.horaInicio)}" oninput="setCategoriaConfig('${cat.id}',{horaInicio:this.value}); renderCronograma('${eventoId}','${dia}')">
-        </div>
-      </div>`).join('')}
+        ${stepsHtml}
+        <button class="btn ghost small" style="margin-top:6px;" onclick="addCategoriaStep('${cat.id}'); renderCronograma('${eventoId}','${dia}')">+ mudar quadras num horário</button>
+      </div>`;
+    }).join('')}
   </div>`;
 
   const evForCalc = Object.assign({}, ev, { duracaoPadrao: ev.duracaoPadrao||30, duracaoDecisiva: ev.duracaoDecisiva||40 });
