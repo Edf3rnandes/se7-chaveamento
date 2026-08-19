@@ -285,6 +285,12 @@ input[type=number]{text-align:center;}
   border-radius:6px; padding:3px 4px; margin:-3px -5px 5px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
 }
 .tree-match.terceiro .tree-final-ribbon{ background:var(--chip-orange); }
+.tree-match.live{ border-color:var(--chip-blue); background:#eef3ff; box-shadow:0 2px 10px rgba(37,84,224,.25); }
+.tree-live-badge{
+  display:inline-block; font-size:9px; font-weight:800; color:var(--chip-blue); margin-right:5px;
+  animation:treeLivePulse 1.4s ease-in-out infinite;
+}
+@keyframes treeLivePulse{ 0%,100%{opacity:1;} 50%{opacity:.35;} }
 .tree-match-tag{font-size:9.5px; color:var(--muted2); margin-bottom:4px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
 .tree-match .tree-num{font-weight:800; color:var(--muted2);}
 .tree-team-block{border-top:1px solid var(--border); margin-top:3px;}
@@ -306,6 +312,7 @@ input[type=number]{text-align:center;}
   box-sizing:border-box; cursor:pointer; box-shadow:0 2px 8px rgba(20,30,30,.08); z-index:2;
   overflow:hidden;
 }
+.tree-semi.live{ border-color:var(--chip-blue); box-shadow:0 2px 10px rgba(37,84,224,.25); }
 .tree-semi-title{
   text-align:center; font-weight:800; font-size:11px; letter-spacing:.3px; color:var(--text);
   padding:7px 4px 5px; background:#f3f9f5;
@@ -1280,7 +1287,12 @@ function resolveTeam(chave, ref){
   if(ref && typeof ref === 'object' && ref.grp){
     const st = groupStandings(chave, ref.grp);
     if(!st.complete){
-      return { label: (ref.pos===1?'1º':'2º') + ' do Grupo ' + ref.grp, resolved:false, teamKey:null };
+      // Placeholder pra qualquer posição do grupo (1º, 2º, 3º, 4º...), não só
+      // 1º/2º — categorias de 4/5 duplas alimentam a disputa de 3º/4º direto
+      // da classificação do grupo (pos 3 e 4), e com o texto fixo em "2º" os
+      // dois lados apareciam como "2º do Grupo" mesmo sendo 3º x 4º.
+      const single = groupNamesOf(chave.numTimes).length === 1;
+      return { label: ordinal(ref.pos) + (single ? ' do grupo' : (' do Grupo ' + ref.grp)), resolved:false, teamKey:null };
     }
     const row = st.rows[ref.pos-1];
     if(!row) return { label:'?', resolved:false, teamKey:null };
@@ -4270,6 +4282,8 @@ function treeMatchBoxHtml(chave, g, top, left, width, height, readOnly, finalLab
   const info = matchInfo(chave, g);
   const res = chave.resultados[g.num];
   const done = !!(res && res.vencedorSlot);
+  const st = matchStatus(chave, g, info, res);
+  const isLive = st.key === 'andamento';
   const origin = originTag(g.a) + ' x ' + originTag(g.b);
   const isFinalOrTerceiro = g.fase === 'Final' || g.fase === '3º/4º';
   const semiLabels = isFinalOrTerceiro ? semiNumLabels(chave) : null;
@@ -4280,12 +4294,13 @@ function treeMatchBoxHtml(chave, g, top, left, width, height, readOnly, finalLab
   const goHash = readOnly ? `/pub/chave/${chave.id}` : `/chave/${chave.id}`;
   const isTerceiro = g.fase === '3º/4º';
   const ribbon = finalLabel ? `<div class="tree-final-ribbon">${escapeHtml(finalLabel)}</div>` : '';
+  const liveBadge = isLive ? `<span class="tree-live-badge">● AO VIVO</span>` : '';
   // Duas duplas empilhadas dentro do MESMO card, separadas por uma linha
   // fina — continua sendo "uma partida só" (não duas caixas soltas), mas
   // cada nome usa a largura inteira do card em vez de dividir uma linha só.
-  return `<div class="tree-match ${finalLabel && !isTerceiro?'final':''} ${isTerceiro?'terceiro':''}" style="top:${top}px; left:${left}px; height:${height}px; width:${width}px;" onclick="location.hash='${goHash}'">
+  return `<div class="tree-match ${finalLabel && !isTerceiro?'final':''} ${isTerceiro?'terceiro':''} ${isLive?'live':''}" style="top:${top}px; left:${left}px; height:${height}px; width:${width}px;" onclick="location.hash='${goHash}'">
     ${ribbon}
-    <div class="tree-match-tag"><span class="tree-num">#${g.num}</span> ${escapeHtml(origin)}</div>
+    <div class="tree-match-tag">${liveBadge}<span class="tree-num">#${g.num}</span> ${escapeHtml(origin)}</div>
     <div class="tree-team-block">
       <div class="tree-team-row ${winA?'win':''}"><span class="tree-tname">${nameA}</span>${scoreA!=null?'<span class="tree-score">'+escapeHtml(String(scoreA))+'</span>':''}</div>
       <div class="tree-team-row ${winB?'win':''}"><span class="tree-tname">${nameB}</span>${scoreB!=null?'<span class="tree-score">'+escapeHtml(String(scoreB))+'</span>':''}</div>
@@ -4306,6 +4321,8 @@ function treeSemiBoxHtml(chave, g, top, left, width, height, readOnly, title){
   const info = matchInfo(chave, g);
   const res = chave.resultados[g.num];
   const done = !!(res && res.vencedorSlot);
+  const st = matchStatus(chave, g, info, res);
+  const isLive = st.key === 'andamento';
   const labelA = sfOriginLabel(chave, g.a);
   const aIsInvicto = labelA === 'Invicto';
   const inv = aIsInvicto
@@ -4315,8 +4332,9 @@ function treeSemiBoxHtml(chave, g, top, left, width, height, readOnly, title){
     ? { name: info.B.resolved ? escapeHtml(info.B.label) : escapeHtml(treePlaceholderLabel(info.B.label)), win: done && res.vencedorSlot==='b', score: scorePillValue(res,'b') }
     : { name: info.A.resolved ? escapeHtml(info.A.label) : escapeHtml(treePlaceholderLabel(info.A.label)), win: done && res.vencedorSlot==='a', score: scorePillValue(res,'a') };
   const goHash = readOnly ? `/pub/chave/${chave.id}` : `/chave/${chave.id}`;
-  return `<div class="tree-semi" style="top:${top}px; left:${left}px; width:${width}px; height:${height}px;" onclick="location.hash='${goHash}'">
-    <div class="tree-semi-title">${escapeHtml(title)}</div>
+  const liveBadge = isLive ? `<span class="tree-live-badge">● AO VIVO</span>` : '';
+  return `<div class="tree-semi ${isLive?'live':''}" style="top:${top}px; left:${left}px; width:${width}px; height:${height}px;" onclick="location.hash='${goHash}'">
+    <div class="tree-semi-title">${liveBadge}${escapeHtml(title)}</div>
     <div class="tree-semi-cells">
       <div class="tree-semi-cell inv ${inv.win?'win':''}">
         <div class="origin">${inv.name}</div>
