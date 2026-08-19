@@ -2398,7 +2398,7 @@ function renderPubEventos(){
             ${ev.local ? `<span>📍 ${escapeHtml(ev.local)}</span>` : ''}
             <span>🏆 ${cats.length} categoria${cats.length===1?'':'s'}</span>
           </div>
-          <div class="cta">Ver chaveamento</div>
+          <div class="cta">Ver categorias</div>
         </div>
       </div>`;
     }).join('') + `</div>`;
@@ -2484,7 +2484,7 @@ function renderPubEventoView(eventoId){
         <span class="status-badge ${status.cls}">${status.label}</span>
       </div>
       ${metaRow}
-      <button class="btn accent" style="margin:12px 0 16px;" onclick="document.getElementById('categoriasSection').scrollIntoView({behavior:'smooth'})">🏆 Ver Chaveamento</button>
+      <button class="btn accent" style="margin:12px 0 16px;" onclick="document.getElementById('categoriasSection').scrollIntoView({behavior:'smooth'})">🏆 Ver categorias</button>
       ${infoCard}
       ${orgCard}
       ${regrasCard}
