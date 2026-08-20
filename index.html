@@ -3010,6 +3010,52 @@ function groupRecordsByCategoria(records){
   });
   return groups;
 }
+// Acha uma categoria JÁ CADASTRADA no evento (em qualquer dia) cujo nome da
+// chave bate com o nome vindo da planilha — é assim que a importação em
+// lote reconhece "essa categoria já existe, é só atualizar" em vez de criar
+// duplicada. Pedido do Ed: comparar a planilha nova com o que já está
+// cadastrado, sem mexer nas datas/horários já definidos.
+function findExistingCategoriaByName(eventoId, nome){
+  const key = normHeader(nome);
+  if(!key) return null;
+  return categoriasOfEvento(eventoId).find(x => normHeader(x.chave.nome) === key) || null;
+}
+// Normaliza um nome de pessoa pra comparação (ignora acento, maiúscula,
+// espaço duplicado) — assim "João Silva" e "joao  silva" batem como o
+// mesmo atleta mesmo com pequena diferença de digitação entre planilhas.
+function normPersonName(s){
+  return String(s||'').trim().toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g,'').replace(/\s+/g,' ');
+}
+// Chave de identidade de um time pra comparar a planilha nova com o que já
+// está cadastrado: o conjunto (sem ordem) dos nomes dos atletas. Pedido do
+// Ed: reconhecer o time pelo nome dos atletas, não pela posição na lista —
+// então uma dupla que só mudou de linha continua sendo "a mesma dupla".
+function teamMatchKey(modalidade, time){
+  const names = modalidade === 'quarteto'
+    ? [0,1,2,3,4,5].map(i => normPersonName((time.atletas||[])[i])).filter(Boolean)
+    : [normPersonName(time.atleta1), normPersonName(time.atleta2)].filter(Boolean);
+  if(names.length) return names.sort().join('+');
+  // Quarteto sem nenhum atleta preenchido (só nome do time) cai pro nome.
+  return (modalidade === 'quarteto' && (time.nome||'').trim()) ? ('NOME:' + normPersonName(time.nome)) : '';
+}
+// Compara os times já cadastrados numa chave com os que vieram na planilha
+// nova: "novos" (na planilha, não achei entre os cadastrados — entram no
+// fim da lista) e "sumidos" (cadastrados, não achei mais na planilha — só
+// aviso, nunca removo sozinho, porque pode já ter jogo com placar lançado
+// em cima desse time — Ed pediu confirmação manual pra isso).
+function diffTimes(existingTimes, newTimes, modalidade){
+  const existingKeys = new Set(existingTimes.map(t => teamMatchKey(modalidade, t)).filter(Boolean));
+  const newKeys = new Set(newTimes.map(t => teamMatchKey(modalidade, t)).filter(Boolean));
+  const novos = newTimes.filter(t => { const k = teamMatchKey(modalidade, t); return !k || !existingKeys.has(k); });
+  const sumidos = existingTimes.filter(t => { const k = teamMatchKey(modalidade, t); return !k || !newKeys.has(k); });
+  return { novos, sumidos };
+}
+// Nome pra exibir na prévia da importação (lista de "novos"/"sumidos").
+function timeDisplayName(modalidade, t){
+  if(modalidade === 'quarteto') return (t.nome||'').trim() || (t.atletas||[]).filter(Boolean).join(' / ') || 'Time sem nome';
+  const a1 = (t.atleta1||'').trim(), a2 = (t.atleta2||'').trim();
+  return (a1 && a2) ? (a1+' / '+a2) : (a1||a2||'Dupla sem nome');
+}
 function onImportPlanilhaSelected(e){
   const file = e.target.files && e.target.files[0];
   if(!file) return;
@@ -3088,28 +3134,74 @@ function renderImportLista(eventoId, dia){
       </div>
       <button class="btn secondary" style="margin-top:10px;" onclick="importListaState.groups=null; renderImportLista('${eventoId}','${dia}')">Tentar outra planilha</button>`;
   } else {
-    const includedCount = s.groups.filter(g=>g.incluir).length;
+    // Conta só o que realmente vai fazer alguma coisa ao confirmar: criação
+    // marcada, ou atualização marcada que tenha time novo pra adicionar (uma
+    // categoria "atualizar" sem novos nem sumidos não conta — não há o que
+    // aplicar; sumidos sozinhos também não contam, porque nunca removem
+    // automaticamente).
+    const actionableCount = s.groups.filter(g => {
+      if(g.acao === 'criar') return g.incluir && g.categoria && g.categoria.trim() && g.times.length;
+      if(!g.incluir || !g.novos || !g.novos.length) return false;
+      const chaveAtual = getChave(g.existingChaveId);
+      const totalNovo = (chaveAtual ? chaveAtual.times.length : 0) + g.novos.length;
+      return SIZES.includes(totalNovo);
+    }).length;
     body = `<div class="hint" style="margin-bottom:10px;">
-        Encontrei <strong>${s.groups.length}</strong> categoria${s.groups.length===1?'':'s'} em <strong>${escapeHtml(s.fileName)}</strong>. Desmarque as que não quer importar agora, ajuste o nome se precisar, e confirme lá embaixo.
+        Encontrei <strong>${s.groups.length}</strong> categoria${s.groups.length===1?'':'s'} em <strong>${escapeHtml(s.fileName)}</strong> — comparei com o que já está cadastrado no evento. Categoria já existente é <strong>atualizada</strong> (só entram os times novos, data/horário não mudam); nome nunca visto <strong>cria</strong> uma categoria nova, sem dia definido, pra você mover e ajustar o horário.
       </div>
       ${s.groups.map((g,i) => {
+        if(g.acao === 'atualizar'){
+          const semMudanca = !g.novos.length && !g.sumidos.length;
+          const chaveAtual = getChave(g.existingChaveId);
+          const totalAtual = chaveAtual ? chaveAtual.times.length : 0;
+          const totalNovo = totalAtual + g.novos.length;
+          const resize = g.novos.length > 0 && totalNovo !== (chaveAtual ? chaveAtual.numTimes : totalAtual);
+          const temPlacar = chaveAtual && Object.keys(chaveAtual.resultados||{}).length > 0;
+          const precisaConfirmarReset = resize && temPlacar;
+          const tamanhoOk = SIZES.includes(totalNovo);
+          if(semMudanca){
+            return `<div class="card" style="padding:12px; margin-bottom:8px; opacity:.65;">
+              <div style="font-weight:700;">✓ ${escapeHtml(g.categoria)}</div>
+              <div class="hint" style="margin-top:4px;">Já está igual ao que está cadastrado — nada a fazer.</div>
+            </div>`;
+          }
+          const novosHtml = g.novos.length ? `<div class="hint" style="margin-top:6px; color:var(--primary-dark); font-weight:600;">+ ${g.novos.map(t=>escapeHtml(timeDisplayName(g.modalidade,t))).join(', ')}</div>` : '';
+          const sumidosHtml = g.sumidos.length ? `<div class="hint" style="margin-top:6px; color:#a68e4f; font-weight:600;">⚠️ Não achei mais na planilha (não removido automaticamente): ${g.sumidos.map(t=>escapeHtml(timeDisplayName(g.modalidade,t))).join(', ')}</div>` : '';
+          const resetWarning = precisaConfirmarReset ? `<label style="display:flex; align-items:flex-start; gap:8px; margin-top:8px; padding:8px; background:#fdecec; border-radius:9px; cursor:pointer;">
+              <input type="checkbox" ${g.confirmReset?'checked':''} onchange="importListaState.groups[${i}].confirmReset=this.checked; renderImportLista('${eventoId}','${dia}')" style="width:auto; margin-top:2px;">
+              <span style="font-size:12.5px; color:#a13a3a; font-weight:600;">Essa categoria já tem placar lançado. Mudar de ${totalAtual} para ${totalNovo} times muda o formato da chave e vai ZERAR os placares já registrados. Confirmo que quero isso.</span>
+            </label>` : '';
+          const disabledByReset = precisaConfirmarReset && !g.confirmReset;
+          const tamanhoWarning = !tamanhoOk ? `<div class="hint" style="margin-top:6px; color:#a13a3a; font-weight:600;">⚠️ ${totalNovo} não bate com nenhum tamanho de chave pronto — não dá pra aplicar por aqui, ajuste manualmente em "Editar chave" depois.</div>` : '';
+          return `<div class="card" style="padding:12px; margin-bottom:8px;">
+            <label style="display:flex; align-items:center; gap:8px; cursor:pointer;">
+              <input type="checkbox" ${g.incluir?'checked':''} ${tamanhoOk?'':'disabled'} onchange="importListaState.groups[${i}].incluir=this.checked; renderImportLista('${eventoId}','${dia}')" style="width:auto;">
+              <span style="flex:1; font-weight:700;">🔁 ${escapeHtml(g.categoria)}</span>
+            </label>
+            <div class="hint" style="margin-top:4px;">${totalAtual} → ${totalNovo} ${g.modalidade==='quarteto'?'times':'duplas'} (categoria já cadastrada, data e horário não mudam)</div>
+            ${novosHtml}${sumidosHtml}${resetWarning}${tamanhoWarning}
+            ${disabledByReset ? `<div class="hint" style="margin-top:6px; color:#a13a3a;">Marque a confirmação acima pra aplicar essa atualização.</div>` : ''}
+          </div>`;
+        }
         const sizeOk = SIZES.includes(g.times.length);
         return `<div class="card" style="padding:12px; margin-bottom:8px;">
           <label style="display:flex; align-items:center; gap:8px; cursor:pointer;">
             <input type="checkbox" ${g.incluir?'checked':''} onchange="importListaState.groups[${i}].incluir=this.checked; renderImportLista('${eventoId}','${dia}')" style="width:auto;">
+            <span style="flex:none; font-weight:700; color:var(--primary-dark);">🆕</span>
             <input type="text" value="${escapeHtmlAttr(g.categoria)}" oninput="importListaState.groups[${i}].categoria=this.value" style="flex:1; margin:0;">
           </label>
           <div class="hint" style="margin-top:6px;">
-            ${g.modalidade==='quarteto'?'Quartetos':'Duplas'} • ${g.times.length} time${g.times.length===1?'':'s'}
+            ${g.modalidade==='quarteto'?'Quartetos':'Duplas'} • ${g.times.length} time${g.times.length===1?'':'s'} • categoria nova
             ${sizeOk ? '' : ` • <span style="color:#a68e4f; font-weight:600;">⚠️ não bate com um tamanho de chave pronto (${SIZES[0]} a ${SIZES[SIZES.length-1]}) — dá pra ajustar depois em "Editar chave"</span>`}
           </div>
           <div style="display:flex; align-items:center; gap:8px; margin-top:8px;">
             <label style="font-size:12.5px; color:var(--muted2); font-weight:600; white-space:nowrap;">⏰ Início</label>
             <input type="time" value="${escapeHtmlAttr(g.horaInicio||'')}" oninput="importListaState.groups[${i}].horaInicio=this.value" style="margin:0; max-width:130px;">
           </div>
+          <div class="hint" style="margin-top:6px;">Entra no dia ${escapeHtml(formatDiaLabel(dia))} — depois é só usar "Mover…" se quiser trocar de dia.</div>
         </div>`;
       }).join('')}
-      <button class="btn" onclick="confirmarImportLista()">Importar ${includedCount} categoria${includedCount===1?'':'s'}</button>
+      <button class="btn" onclick="confirmarImportLista()">Aplicar ${actionableCount} mudança${actionableCount===1?'':'s'}</button>
       <button class="btn ghost small" style="margin-top:8px;" onclick="importListaState.groups=null; renderImportLista('${eventoId}','${dia}')">Tentar outra planilha</button>`;
   }
 
@@ -3140,9 +3232,25 @@ function onImportListaCompletaSelected(e){
       }
       const rawGroups = groupRecordsByCategoria(records);
       importListaState.fileName = file.name;
+      // Cada categoria da planilha vira ou "criar" (nome novo, nunca visto
+      // no evento) ou "atualizar" (já existe uma chave com esse nome, em
+      // qualquer dia) — nesse segundo caso comparamos os times pelo nome
+      // dos atletas pra descobrir só quem é novo, sem duplicar categoria
+      // nem mexer na data/horário que já estava definido.
       importListaState.groups = rawGroups.map(g => {
-        const { modalidade, times } = buildTimesFromRows(g.rows);
-        return { categoria: g.categoria, modalidade, times, incluir: true, horaInicio: '' };
+        const { modalidade: modalidadeSheet, times } = buildTimesFromRows(g.rows);
+        const match = findExistingCategoriaByName(importListaState.eventoId, g.categoria);
+        if(match){
+          const modalidade = match.chave.modalidade; // usa a modalidade já cadastrada, evita duplicar por conta de uma coluna ambígua
+          const diff = diffTimes(match.chave.times || [], times, modalidade);
+          return {
+            categoria: g.categoria, modalidade, times, horaInicio: '',
+            acao: 'atualizar', existingChaveId: match.chave.id,
+            novos: diff.novos, sumidos: diff.sumidos,
+            incluir: diff.novos.length > 0, confirmReset: false,
+          };
+        }
+        return { categoria: g.categoria, modalidade: modalidadeSheet, times, incluir: true, horaInicio: '', acao: 'criar' };
       });
       renderImportLista(importListaState.eventoId, importListaState.dia);
     } catch(err){
@@ -3153,32 +3261,62 @@ function onImportListaCompletaSelected(e){
   reader.readAsArrayBuffer(file);
   e.target.value = '';
 }
+// Aplica a prévia: categorias "criar" viram chave nova (sem dia definido,
+// pro Ed mover e ajustar horário); categorias "atualizar" só recebem os
+// times novos no final da lista — nunca mexem em data/horário/quadras já
+// definidos, e só zeram placar se realmente mudar o tamanho da chave E já
+// tinha jogo lançado (e mesmo assim só com a confirmação explícita marcada
+// na prévia).
 function confirmarImportLista(){
   const s = importListaState;
   if(!s || !s.groups) return;
-  const selected = s.groups.filter(g => g.incluir && g.categoria && g.categoria.trim() && g.times.length);
-  if(!selected.length){ toast('Marque pelo menos uma categoria pra importar'); return; }
-  selected.forEach(g => {
-    const c = {
-      id: uid('c'),
-      nome: g.categoria.trim(),
-      modalidade: g.modalidade,
-      numTimes: g.times.length,
-      formato: 'unico',
-      formatoDecisivo: 'melhorDe3',
-      disputa3: true,
-      times: g.times,
-      resultados: {},
-      criadoEm: Date.now()
-    };
-    updateChave(c);
-    const cat = { id:uid('cat'), eventoId:s.eventoId, data:s.dia, chaveId:c.id, horaInicio: g.horaInicio || null, criadoEm:Date.now() };
-    updateCategoria(cat);
+  let criadas = 0, atualizadas = 0, placaresZerados = 0, puladasPorConfirmacao = 0, puladasPorTamanho = 0;
+  s.groups.forEach(g => {
+    if(g.acao === 'criar'){
+      if(!g.incluir || !g.categoria || !g.categoria.trim() || !g.times.length) return;
+      const c = {
+        id: uid('c'),
+        nome: g.categoria.trim(),
+        modalidade: g.modalidade,
+        numTimes: g.times.length,
+        formato: 'unico',
+        formatoDecisivo: 'melhorDe3',
+        disputa3: true,
+        times: g.times,
+        resultados: {},
+        criadoEm: Date.now()
+      };
+      updateChave(c);
+      const cat = { id:uid('cat'), eventoId:s.eventoId, data:s.dia, chaveId:c.id, horaInicio: g.horaInicio || null, criadoEm:Date.now() };
+      updateCategoria(cat);
+      criadas++;
+      return;
+    }
+    // acao === 'atualizar'
+    if(!g.novos || !g.novos.length) return; // nada novo pra somar (sumidos sozinhos nunca aplicam automaticamente)
+    if(!g.incluir) return;
+    const chave = getChave(g.existingChaveId);
+    if(!chave) return;
+    const novoTimes = (chave.times || []).concat(g.novos);
+    if(!SIZES.includes(novoTimes.length)){ puladasPorTamanho++; return; } // não existe chave pronta pra esse total — ajuste manual em "Editar chave"
+    const resize = novoTimes.length !== chave.numTimes;
+    const temPlacar = Object.keys(chave.resultados || {}).length > 0;
+    if(resize && temPlacar && !g.confirmReset){ puladasPorConfirmacao++; return; }
+    chave.times = novoTimes;
+    chave.numTimes = novoTimes.length;
+    if(resize && temPlacar){ chave.resultados = {}; placaresZerados++; }
+    updateChave(chave);
+    atualizadas++;
   });
   const eventoId = s.eventoId, dia = s.dia;
-  const count = selected.length;
   importListaState = null;
-  toast(count + ' categoria' + (count===1?'':'s') + ' criada' + (count===1?'':'s') + ' — confira e ajuste os times se precisar');
+  const partes = [];
+  if(criadas) partes.push(criadas + ' nova' + (criadas===1?'':'s'));
+  if(atualizadas) partes.push(atualizadas + ' atualizada' + (atualizadas===1?'':'s'));
+  if(placaresZerados) partes.push(placaresZerados + ' com placar zerado (mudou de tamanho)');
+  if(puladasPorConfirmacao) partes.push(puladasPorConfirmacao + ' pulada' + (puladasPorConfirmacao===1?'':'s') + ' — falta confirmar o aviso de placar');
+  if(puladasPorTamanho) partes.push(puladasPorTamanho + ' pulada' + (puladasPorTamanho===1?'':'s') + ' — total não bate com nenhum tamanho de chave pronto');
+  toast(partes.length ? ('Categorias: ' + partes.join(', ')) : 'Nenhuma mudança pra aplicar');
   location.hash = '/evento/' + eventoId + '/' + encodeURIComponent(dia);
 }
 
