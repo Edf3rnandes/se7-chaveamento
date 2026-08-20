@@ -3701,10 +3701,38 @@ function montarTabelaCronogramaDia(ev, eventoId, dia){
   });
   return { head, body, corMap, quadras: dc.quadras };
 }
+// Calcula um tamanho de página sob medida pra tabela de um dia — em vez de
+// forçar A4/Letter e deixar o autotable quebrar em várias páginas quando tem
+// muita quadra ou muito horário, a página nasce do tamanho exato da tabela
+// (fonte/coluna ajustadas pela quantidade de quadras), garantindo 1 página só
+// — pedido do Ed ("encaixar o pdf em uma única página").
+function cronogramaPdfLayout(t){
+  const cols = t.head[0].length;
+  const rows = t.body.length;
+  let fontSize, cellPadding, horarioW, quadraW;
+  if(cols <= 5){ fontSize = 9; cellPadding = 3.5; horarioW = 58; quadraW = 78; }
+  else if(cols <= 8){ fontSize = 8; cellPadding = 3; horarioW = 52; quadraW = 68; }
+  else if(cols <= 12){ fontSize = 7; cellPadding = 2.5; horarioW = 46; quadraW = 58; }
+  else if(cols <= 16){ fontSize = 6; cellPadding = 2; horarioW = 42; quadraW = 48; }
+  else { fontSize = 5.5; cellPadding = 1.5; horarioW = 38; quadraW = 40; }
+  const quadraCols = Math.max(0, cols - 1);
+  const tableW = horarioW + quadraCols * quadraW;
+  const rowH = fontSize * 1.5 + cellPadding * 2;
+  const headerH = fontSize * 1.6 + cellPadding * 2 + 2;
+  const tableH = headerH + rows * rowH;
+  const marginX = 24, topY = 58, marginBottom = 24;
+  const pageW = Math.max(300, tableW + marginX * 2);
+  const pageH = Math.max(200, topY + tableH + marginBottom);
+  const colStyles = { 0: { cellWidth: horarioW } };
+  for(let i=0; i<quadraCols; i++) colStyles[i+1] = { cellWidth: quadraW };
+  return { fontSize, cellPadding, horarioW, quadraW, marginX, topY, pageW, pageH, colStyles };
+}
 // PDF no mesmo formato da grade em tela: horário nas linhas, quadra nas
 // colunas, célula colorida por categoria com "categoria · #jogo fase" — igual
 // ao modelo de planilha que o Ed já usa (a mesma célula repete o texto em
-// cada linha que o jogo ocupa, já que autotable não tem rowspan nativo).
+// cada linha que o jogo ocupa, já que autotable não tem rowspan nativo). A
+// página é dimensionada sob medida (cronogramaPdfLayout) pra tudo caber numa
+// página só, sem quebrar em várias.
 function exportCronogramaPDF(eventoId, dia){
   const ev = getEvento(eventoId);
   if(!ev) return;
@@ -3713,17 +3741,22 @@ function exportCronogramaPDF(eventoId, dia){
     const t = montarTabelaCronogramaDia(ev, eventoId, dia);
     if(!t){ toast('Nada pra exportar ainda'); return; }
     const { jsPDF } = window.jspdf;
-    const doc = new jsPDF({ orientation:'landscape', unit:'pt' });
+    const L = cronogramaPdfLayout(t);
+    const orientation = L.pageW >= L.pageH ? 'landscape' : 'portrait';
+    const doc = new jsPDF({ orientation, unit:'pt', format:[L.pageW, L.pageH] });
     doc.setFontSize(14);
     doc.text(ev.nome + (ev.edicao ? (' — ' + ev.edicao) : ''), 30, 30);
     doc.setFontSize(10);
     doc.text('Cronograma de quadras • ' + formatDiaLabelFull(dia), 30, 46);
     doc.autoTable({
-      startY: 58,
+      startY: L.topY,
       head: t.head,
       body: t.body,
-      styles: { fontSize: 7, cellPadding: 2.5 },
+      styles: { fontSize: L.fontSize, cellPadding: L.cellPadding, overflow:'linebreak' },
       headStyles: { fillColor: [37,84,224] },
+      columnStyles: L.colStyles,
+      tableWidth: 'wrap',
+      margin: { left: L.marginX, right: L.marginX },
       didParseCell: (data) => {
         if(data.section === 'body' && data.column.index > 0){
           const txt = String(data.cell.raw || '').split(' · ')[0];
@@ -3734,43 +3767,43 @@ function exportCronogramaPDF(eventoId, dia){
     doc.save('cronograma-' + dia + '.pdf');
   }).catch(() => toast('Não consegui carregar o gerador de PDF — confira sua internet'));
 }
-// Junta todos os dias do evento num único PDF (uma tabela por dia, uma
-// abaixo da outra, na mesma folha quando cabe — senão continua na página
-// seguinte automaticamente) — pedido do Ed pra não ter que exportar um PDF
-// por dia separado.
+// Junta todos os dias do evento num único PDF — cada dia numa página própria
+// (doc.addPage antes de cada dia, sempre, não só "quando não cabe"), e cada
+// página nasce do tamanho exato da tabela daquele dia (mesmo cálculo do PDF
+// de um dia só) — pedido do Ed: "cada dia, em uma pagina dos pdf".
 function exportCronogramaTodosDiasPDF(eventoId){
   const ev = getEvento(eventoId);
   if(!ev) return;
   const dias = diasOfEvento(ev);
   if(!dias.length){ toast('Esse evento não tem dias configurados'); return; }
+  const tabelas = dias.map(dia => ({ dia, t: montarTabelaCronogramaDia(ev, eventoId, dia) })).filter(x => x.t);
+  if(!tabelas.length){ toast('Nenhum dia com cronograma pra exportar ainda'); return; }
   toast('Gerando PDF…');
   ensureJsPdfLoaded().then(() => {
     const { jsPDF } = window.jspdf;
-    const doc = new jsPDF({ orientation:'landscape', unit:'pt' });
-    let any = false;
-    let cursorY = 40;
-    doc.setFontSize(15);
-    doc.text(ev.nome + (ev.edicao ? (' — ' + ev.edicao) : ''), 30, cursorY);
-    cursorY += 14;
-    doc.setFontSize(9);
-    doc.text('Cronograma de quadras — todos os dias', 30, cursorY);
-    cursorY += 16;
-    dias.forEach(dia => {
-      const t = montarTabelaCronogramaDia(ev, eventoId, dia);
-      if(!t) return;
-      any = true;
-      const pageH = doc.internal.pageSize.getHeight();
-      if(cursorY > pageH - 100){ doc.addPage(); cursorY = 30; }
-      doc.setFontSize(11);
-      doc.setTextColor(30,30,30);
-      doc.text(formatDiaLabelFull(dia), 30, cursorY);
-      cursorY += 6;
+    let doc = null;
+    tabelas.forEach((item, i) => {
+      const dia = item.dia, t = item.t;
+      const L = cronogramaPdfLayout(t);
+      const orientation = L.pageW >= L.pageH ? 'landscape' : 'portrait';
+      if(i === 0){
+        doc = new jsPDF({ orientation, unit:'pt', format:[L.pageW, L.pageH] });
+      } else {
+        doc.addPage([L.pageW, L.pageH], orientation);
+      }
+      doc.setFontSize(14);
+      doc.text(ev.nome + (ev.edicao ? (' — ' + ev.edicao) : ''), 30, 30);
+      doc.setFontSize(10);
+      doc.text('Cronograma de quadras • ' + formatDiaLabelFull(dia), 30, 46);
       doc.autoTable({
-        startY: cursorY,
+        startY: L.topY,
         head: t.head,
         body: t.body,
-        styles: { fontSize: 6.5, cellPadding: 2 },
+        styles: { fontSize: L.fontSize, cellPadding: L.cellPadding, overflow:'linebreak' },
         headStyles: { fillColor: [37,84,224] },
+        columnStyles: L.colStyles,
+        tableWidth: 'wrap',
+        margin: { left: L.marginX, right: L.marginX },
         didParseCell: (data) => {
           if(data.section === 'body' && data.column.index > 0){
             const txt = String(data.cell.raw || '').split(' · ')[0];
@@ -3778,9 +3811,7 @@ function exportCronogramaTodosDiasPDF(eventoId){
           }
         }
       });
-      cursorY = doc.lastAutoTable.finalY + 22;
     });
-    if(!any){ toast('Nenhum dia com cronograma pra exportar ainda'); return; }
     doc.save('cronograma-' + (ev.nome||'evento').toLowerCase().replace(/[^a-z0-9]+/g,'-') + '-todos-os-dias.pdf');
   }).catch(() => toast('Não consegui carregar o gerador de PDF — confira sua internet'));
 }
