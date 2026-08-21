@@ -196,6 +196,9 @@ input[type=number]{text-align:center;}
 .team-row.placeholder .tname{color:var(--muted2); font-weight:500; font-style:italic;}
 .team-row.winner{background:var(--winner-bg);}
 .team-row.winner .tname{color:var(--primary-dark); font-weight:800;}
+/* Dupla já classificada pra essa fase mas o jogo ainda não formou (esperando
+   o adversário) — negrito pra achar rápido quem já avançou (Ed, 21/08/2026). */
+.team-row.waiting-opponent .tname{font-weight:800;}
 .team-row .score-pill{
   flex:none; min-width:26px; text-align:center; font-size:12.5px; font-weight:800; padding:3px 10px; border-radius:20px;
   background:#fff; border:1.3px solid var(--border); color:var(--text);
@@ -2681,8 +2684,8 @@ function renderPubMatchCard(chave, g){
   const badge = `<span class="match-badge ${st.cls}">${st.label}</span>`;
   const chip = chaveBadgeInfo(chave, g);
   const quadra = (chave.quadras || {})[g.num] || '';
-  const rowA = teamRow(info.A, done && res.vencedorSlot==='a', scorePillValue(res,'a'));
-  const rowB = teamRow(info.B, done && res.vencedorSlot==='b', scorePillValue(res,'b'));
+  const rowA = teamRow(info.A, done && res.vencedorSlot==='a', scorePillValue(res,'a'), !info.ready && info.A.resolved && !info.B.resolved);
+  const rowB = teamRow(info.B, done && res.vencedorSlot==='b', scorePillValue(res,'b'), !info.ready && info.B.resolved && !info.A.resolved);
   let scoreArea = '';
   if(done && res.wo){
     scoreArea = `<div class="hint" style="text-align:center;">W.O.</div>`;
@@ -5068,8 +5071,8 @@ function renderMatchCard(chave, g){
   const chip = chaveBadgeInfo(chave, g);
   const quadra = (chave.quadras || {})[g.num] || '';
 
-  const rowA = teamRow(info.A, done && res.vencedorSlot==='a', scorePillValue(res,'a'));
-  const rowB = teamRow(info.B, done && res.vencedorSlot==='b', scorePillValue(res,'b'));
+  const rowA = teamRow(info.A, done && res.vencedorSlot==='a', scorePillValue(res,'a'), !info.ready && info.A.resolved && !info.B.resolved);
+  const rowB = teamRow(info.B, done && res.vencedorSlot==='b', scorePillValue(res,'b'), !info.ready && info.B.resolved && !info.A.resolved);
 
   let scoreArea = '';
   if(info.ready && !done){
@@ -5100,8 +5103,13 @@ function renderMatchCard(chave, g){
   </div>`;
 }
 
-function teamRow(t, isWinner, scoreVal){
-  const cls = 'team-row' + (!t.resolved ? ' placeholder' : '') + (isWinner ? ' winner' : '');
+// "waiting" (Ed, 21/08/2026): a dupla já se classificou pra essa fase (nome
+// resolvido, não é mais "Vencedor Jogo X"), mas o jogo ainda não está
+// formado porque o OUTRO lado ainda depende de outro resultado — ela fica
+// "parada" esperando adversário. Deixa o nome em negrito nesse caso pra
+// facilitar localizar rapidinho quem já avançou e está só esperando.
+function teamRow(t, isWinner, scoreVal, waiting){
+  const cls = 'team-row' + (!t.resolved ? ' placeholder' : '') + (isWinner ? ' winner' : '') + (waiting ? ' waiting-opponent' : '');
   const pill = (scoreVal !== null && scoreVal !== undefined && scoreVal !== '') ? `<span class="score-pill">${escapeHtml(String(scoreVal))}</span>` : '';
   return `<div class="${cls}">
     <div class="tname">${escapeHtml(t.label)}</div>
