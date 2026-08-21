@@ -462,6 +462,20 @@ input[type=number]{text-align:center;}
 }
 .quadra-nome-add{display:flex; gap:8px; align-items:center;}
 .quadra-nome-add input{flex:1;}
+/* Classificação de grupo (3/4/5 duplas) — critérios saldo de vitórias →
+   average → confronto direto (Ed, 21/08/2026), com ▲/▼ pro organizador
+   ajustar manualmente quando o critério automático não resolve. */
+.standings-row{display:flex; justify-content:space-between; align-items:center; gap:8px; font-size:13.5px; padding:4px 0; border-bottom:1px solid var(--border);}
+.standings-stats{color:var(--muted2); font-size:12px; white-space:nowrap;}
+.standings-actions{display:flex; gap:4px; flex:none;}
+.standings-actions .qmove{
+  width:20px; height:20px; border-radius:6px; background:#fff; border:1px solid var(--border); color:var(--text);
+  font-size:10px; font-weight:800; cursor:pointer; line-height:1; display:flex; align-items:center; justify-content:center; padding:0;
+}
+.standings-actions .qmove:hover:not(:disabled){background:var(--chip-blue); color:#fff; border-color:var(--chip-blue);}
+.standings-actions .qmove:disabled{opacity:.3; cursor:default;}
+.standings-manual-tag{font-size:10px; font-weight:700; color:#8a5a12; background:#fdeee0; padding:2px 6px; border-radius:6px;}
+.standings-reset-link{font-size:10.5px; font-weight:700; color:var(--chip-blue); cursor:pointer; text-decoration:underline;}
 /* Mapa visual das quadras (Ed, 21/08/2026) — duas colunas (esquerda/direita
    da arena, igual a foto que ele mandou), cada quadra mostrando o nome e a
    categoria que está jogando (ou a próxima) ali naquele momento. */
@@ -1473,11 +1487,21 @@ function groupRanks(numTimes, grp){
   games.forEach(g=>{ if(typeof g.a==='number') set.add(g.a); if(typeof g.b==='number') set.add(g.b); });
   return Array.from(set).sort((x,y)=>x-y);
 }
+// Critério de desempate pedido pelo Ed (21/08/2026), nessa ordem: 1º saldo
+// de vitórias, 2º average de pontos, 3º confronto direto (só entra quando os
+// dois primeiros empatam OS DOIS — confronto direto de um par específico não
+// tem como decidir empate de 3+ duplas de uma vez, então é aplicado par a
+// par dentro do sort, que é o comportamento padrão pra chave de grupo único
+// pequena como essa). "Feitos" total continua como 4º critério de
+// segurança, só pra nunca deixar a ordem indefinida (sort estável).
 function groupStandings(chave, grp){
   const games = groupGames(chave.numTimes, grp);
   const ranks = groupRanks(chave.numTimes, grp);
   const stats = {};
-  ranks.forEach(r => stats[r] = { rank:r, feitos:0, sofridos:0, jogos:0, label: resolveTeam(chave, r).label });
+  ranks.forEach(r => stats[r] = { rank:r, feitos:0, sofridos:0, jogos:0, vitorias:0, label: resolveTeam(chave, r).label });
+  // headToHead[a][b] = 'a' ou 'b' — quem venceu o confronto direto entre as
+  // duas duplas de rank a e b (se já jogaram).
+  const headToHead = {};
   let playedCount = 0;
   games.forEach(g=>{
     const res = chave.resultados[g.num];
@@ -1487,6 +1511,11 @@ function groupStandings(chave, grp){
     (res.sets||[]).forEach(s=>{ fa+=s[0]; fb+=s[1]; });
     stats[g.a].feitos += fa; stats[g.a].sofridos += fb; stats[g.a].jogos++;
     stats[g.b].feitos += fb; stats[g.b].sofridos += fa; stats[g.b].jogos++;
+    if(res.vencedorSlot === 'a') stats[g.a].vitorias++; else stats[g.b].vitorias++;
+    headToHead[g.a] = headToHead[g.a] || {};
+    headToHead[g.b] = headToHead[g.b] || {};
+    headToHead[g.a][g.b] = res.vencedorSlot === 'a' ? g.a : g.b;
+    headToHead[g.b][g.a] = headToHead[g.a][g.b];
   });
   const arr = ranks.map(r=>{
     const s = stats[r];
@@ -1494,11 +1523,53 @@ function groupStandings(chave, grp){
     return Object.assign({}, s, { average });
   });
   arr.sort((x,y)=>{
+    if(y.vitorias !== x.vitorias) return y.vitorias - x.vitorias;
     if(y.average !== x.average) return y.average - x.average;
+    const h2h = headToHead[x.rank] && headToHead[x.rank][y.rank];
+    if(h2h) return h2h === x.rank ? -1 : 1;
     if(y.feitos !== x.feitos) return y.feitos - x.feitos;
     return 0;
   });
-  return { rows: arr, complete: playedCount === games.length, totalGames: games.length, played: playedCount };
+
+  // Ajuste manual (Ed, 21/08/2026: "deixe editável para contagem dos
+  // pontos") — organizador pode reordenar a classificação calculada quando
+  // o critério automático não resolve do jeito que ele precisa. Guardado
+  // como a lista de ranks na ordem final desejada; só é aplicado se cobrir
+  // exatamente o mesmo conjunto de duplas do grupo (protege contra ficar
+  // "preso" numa ordem velha depois de editar duplas/trocar o grupo).
+  const overrideOrder = chave.standingsOverride && chave.standingsOverride[grp];
+  let overridden = false;
+  let finalArr = arr;
+  if(overrideOrder && overrideOrder.length === arr.length && overrideOrder.every(r => stats[r])){
+    const byRank = {}; arr.forEach(row => { byRank[row.rank] = row; });
+    finalArr = overrideOrder.map(r => byRank[r]);
+    overridden = true;
+  }
+
+  return { rows: finalArr, complete: playedCount === games.length, totalGames: games.length, played: playedCount, overridden };
+}
+// Move uma dupla pra cima/baixo na classificação (ajuste manual) — grava a
+// ordem inteira do grupo como override, a partir da ordem ATUALMENTE exibida
+// (que já pode ser um override anterior).
+function moveStandingsRow(chaveId, grp, idx, dir){
+  const chave = getChave(chaveId);
+  if(!chave) return;
+  const st = groupStandings(chave, grp);
+  const order = st.rows.map(r => r.rank);
+  const j = idx + dir;
+  if(j < 0 || j >= order.length) return;
+  const tmp = order[j]; order[j] = order[idx]; order[idx] = tmp;
+  chave.standingsOverride = Object.assign({}, chave.standingsOverride, { [grp]: order });
+  updateChave(chave);
+}
+function resetStandingsOverride(chaveId, grp){
+  const chave = getChave(chaveId);
+  if(!chave || !chave.standingsOverride) return;
+  const novo = Object.assign({}, chave.standingsOverride);
+  delete novo[grp];
+  chave.standingsOverride = novo;
+  updateChave(chave);
+  toast('Classificação voltou a ser calculada automaticamente');
 }
 
 function matchInfo(chave, g){
@@ -2982,7 +3053,7 @@ function renderPubChaveView(id){
     ${standings.map(r=>`<div class="podium-row"><div class="pos ${r.cls}">${r.pos}</div><div class="name">${escapeHtml(r.name)}</div></div>`).join('')}
   </div>` : '';
 
-  const groupCard = renderGroupCard(chave);
+  const groupCard = renderGroupCard(chave, true);
 
   const groupSection = groupGames.length ? (() => {
     const doneCount = groupGames.filter(g => chave.resultados[g.num] && chave.resultados[g.num].vencedorSlot).length;
@@ -4303,7 +4374,7 @@ function renderChaveView(id){
     ${standings.map(r=>`<div class="podium-row"><div class="pos ${r.cls}">${r.pos}</div><div class="name">${escapeHtml(r.name)}</div></div>`).join('')}
   </div>` : '';
 
-  const groupCard = renderGroupCard(chave);
+  const groupCard = renderGroupCard(chave, false);
 
   const groupSection = groupGames.length ? (() => {
     const doneCount = groupGames.filter(g => chave.resultados[g.num] && chave.resultados[g.num].vencedorSlot).length;
@@ -4361,28 +4432,40 @@ function groupNamesOf(numTimes){
   games.forEach(g => { if(g.grupo) set.add(g.grupo); });
   return Array.from(set).sort();
 }
-function renderGroupCard(chave){
+// Critério de desempate (Ed, 21/08/2026): 1º saldo de vitórias, 2º average
+// de pontos, 3º confronto direto — nessa ordem, mostrados na tabela. O
+// organizador pode ajustar manualmente a ordem com ▲/▼ (readOnly=false),
+// pra casos que os critérios automáticos não resolvem do jeito que ele quer;
+// a tela pública só mostra o resultado, sem os controles.
+function renderGroupCard(chave, readOnly){
   const names = groupNamesOf(chave.numTimes);
   if(names.length === 0) return '';
   const single = names.length === 1;
   return `<div class="card">
     <div style="font-weight:800;font-size:13px;color:var(--primary-dark);margin-bottom:8px;">
       ${single ? 'Classificação' : 'Classificação dos grupos'}
-      <span style="font-weight:500;color:var(--muted2);font-size:11.5px;">(average = pontos feitos ÷ sofridos)</span>
+      <span style="font-weight:500;color:var(--muted2);font-size:11.5px;">(critérios: saldo de vitórias → average → confronto direto)</span>
     </div>
-    ${names.map(n => groupTableHtml(single ? null : n, groupStandings(chave, n))).join('')}
-    <div class="hint">Empate no average é desempatado pelo total de pontos feitos.</div>
+    ${names.map(n => groupTableHtml(chave, single ? null : n, groupStandings(chave, n), readOnly)).join('')}
+    ${readOnly ? '' : '<div class="hint">Use ▲/▼ pra ajustar manualmente a ordem quando os critérios automáticos não bastarem.</div>'}
   </div>`;
 }
-function groupTableHtml(name, st){
+function groupTableHtml(chave, name, st, readOnly){
   const title = name ? ('Grupo ' + name) : 'Fase de grupos';
+  const grpKey = name || 'UNICO';
   return `<div style="margin-bottom:10px;">
-    <div style="font-size:12px;font-weight:700;color:var(--muted2);margin-bottom:4px;">
-      ${title} ${st.complete ? '' : ('· parcial (' + st.played + '/' + st.totalGames + ' jogos)')}
+    <div style="font-size:12px;font-weight:700;color:var(--muted2);margin-bottom:4px;display:flex;align-items:center;gap:8px;">
+      <span>${title} ${st.complete ? '' : ('· parcial (' + st.played + '/' + st.totalGames + ' jogos)')}</span>
+      ${st.overridden ? `<span class="standings-manual-tag">✋ ajustado manualmente</span>` : ''}
+      ${(st.overridden && !readOnly) ? `<span class="standings-reset-link" onclick="resetStandingsOverride('${chave.id}','${grpKey}')">voltar ao automático</span>` : ''}
     </div>
-    ${st.rows.map((r,i)=>`<div style="display:flex;justify-content:space-between;align-items:center;font-size:13.5px;padding:4px 0;border-bottom:1px solid var(--border);">
+    ${st.rows.map((r,i)=>`<div class="standings-row">
        <span style="font-weight:600;">${i+1}º ${escapeHtml(r.label)}</span>
-       <span style="color:var(--muted2);font-size:12.5px;">${r.feitos}/${r.sofridos} · ${r.average===Infinity ? '∞' : r.average.toFixed(2)}</span>
+       <span class="standings-stats">${r.vitorias}v · ${r.feitos}/${r.sofridos} · ${r.average===Infinity ? '∞' : r.average.toFixed(2)}</span>
+       ${readOnly ? '' : `<span class="standings-actions">
+         <button class="qmove" title="Subir" ${i===0?'disabled':''} onclick="moveStandingsRow('${chave.id}','${grpKey}',${i},-1)">▲</button>
+         <button class="qmove" title="Descer" ${i===st.rows.length-1?'disabled':''} onclick="moveStandingsRow('${chave.id}','${grpKey}',${i},1)">▼</button>
+       </span>`}
     </div>`).join('')}
   </div>`;
 }
@@ -5382,7 +5465,7 @@ function renderAtletasListHtml(chave){
 function treeSectionHtml(chave, readOnly){
   const mode = treeModeFor(chave);
   if(mode === 'grouped'){
-    const groupCard = renderGroupCard(chave);
+    const groupCard = renderGroupCard(chave, readOnly);
     const semisFinal = renderTreeView(chave, readOnly);
     return groupCard + semisFinal;
   }
