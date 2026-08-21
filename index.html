@@ -388,6 +388,12 @@ input[type=number]{text-align:center;}
 .match-court input[type=number]{ -moz-appearance:textfield; }
 .match-court input[type=number]::-webkit-outer-spin-button,
 .match-court input[type=number]::-webkit-inner-spin-button{ -webkit-appearance:none; margin:0; }
+/* Select de quadra por nome (Ed, 21/08/2026) — mesmo visual discreto do
+   input numérico que ele substitui quando o evento tem quadras cadastradas. */
+.match-court select{
+  border:none; background:transparent; font-size:10.5px; font-weight:700; color:var(--text);
+  padding:0; max-width:120px;
+}
 .andamento-btn{
   flex:none; border:1.5px solid var(--chip-orange); color:var(--chip-orange); background:#fff;
   border-radius:20px; padding:4px 10px; font-size:11px; font-weight:800; cursor:pointer;
@@ -427,6 +433,38 @@ input[type=number]{text-align:center;}
   position:absolute; top:-6px; right:-6px; width:20px; height:20px; border-radius:50%; background:#a13a3a; color:#fff;
   border:none; font-size:12px; font-weight:800; cursor:pointer; line-height:1; display:flex; align-items:center; justify-content:center;
 }
+/* Lista de nomes de quadras cadastrados no evento (Ed, 21/08/2026) — chips de
+   texto simples, mesmo espírito visual dos thumbs de patrocinador acima. */
+.quadra-nome-row{display:flex; flex-wrap:wrap; gap:8px; margin-top:10px;}
+.quadra-nome-chip{
+  display:flex; align-items:center; gap:7px; background:#eef3ff; border:1px solid var(--border);
+  border-radius:20px; padding:6px 8px 6px 14px; font-size:13px; font-weight:700; color:var(--primary-dark);
+}
+.quadra-nome-chip.direita{background:#fdeee0;}
+.quadra-nome-chip .lado-tag{
+  font-size:9px; font-weight:800; color:var(--muted2); background:#fff; border-radius:6px; padding:1px 5px; flex:none;
+}
+.quadra-nome-chip .rm{
+  width:18px; height:18px; border-radius:50%; background:#a13a3a; color:#fff; border:none;
+  font-size:11px; font-weight:800; cursor:pointer; line-height:1; display:flex; align-items:center; justify-content:center; flex:none;
+}
+.quadra-nome-add{display:flex; gap:8px; align-items:center;}
+.quadra-nome-add input{flex:1;}
+/* Mapa visual das quadras (Ed, 21/08/2026) — duas colunas (esquerda/direita
+   da arena, igual a foto que ele mandou), cada quadra mostrando o nome e a
+   categoria que está jogando (ou a próxima) ali naquele momento. */
+.quadra-mapa-card{margin-bottom:14px;}
+.quadra-mapa{display:flex; gap:14px; margin-top:10px;}
+.quadra-mapa-lado{flex:1; display:flex; flex-direction:column; gap:8px; min-width:0;}
+.quadra-mapa-lado-label{font-size:10px; font-weight:800; letter-spacing:.05em; text-transform:uppercase; color:var(--muted2); margin-bottom:2px;}
+.quadra-mapa-box{
+  border:1.5px solid var(--border); border-radius:10px; padding:9px 11px; background:#fff;
+}
+.quadra-mapa-box.ocupada{border-color:var(--chip-blue); background:#eef3ff;}
+.quadra-mapa-nome{font-weight:800; font-size:12.5px; color:var(--text);}
+.quadra-mapa-cat{font-size:12px; color:var(--primary-dark); font-weight:700; margin-top:3px;}
+.quadra-mapa-cat.livre{color:var(--muted2); font-weight:500; font-style:italic;}
+.quadra-mapa-tempo{font-size:10px; color:var(--muted2); margin-top:1px;}
 .sponsor-footer{margin-top:22px; padding-top:16px; border-top:1px solid var(--border); text-align:center;}
 .sponsor-footer-label{font-size:10.5px; font-weight:800; letter-spacing:.06em; text-transform:uppercase; color:var(--muted2); margin-bottom:10px;}
 .sponsor-footer-logos{display:flex; flex-wrap:wrap; align-items:center; justify-content:center; gap:16px;}
@@ -2229,6 +2267,14 @@ function confirmDeleteEvento(id){
   }
 }
 
+// Uma entrada de quadra é {nome, lado} — "lado" ('esquerda'|'direita') é o
+// que alimenta o mapa visual (Ed, 21/08/2026: quadras de um lado e do outro
+// da arena, igual a foto que ele mandou). Versões antigas gravaram só string
+// (sem lado) — normaliza pra sempre virar objeto, default 'esquerda'.
+function normQuadraNome(q){
+  if(typeof q === 'string') return { nome:q, lado:'esquerda' };
+  return { nome:(q && q.nome) || '', lado:(q && q.lado) === 'direita' ? 'direita' : 'esquerda' };
+}
 let eventoSetupState = null;
 function renderEventoSetup(editId){
   const editing = editId ? getEvento(editId) : null;
@@ -2236,14 +2282,17 @@ function renderEventoSetup(editId){
     eventoSetupState = editing ? {
       _editId:editId, nome:editing.nome, edicao:editing.edicao||'', dataInicio:editing.dataInicio, dataFim:editing.dataFim,
       fotoUrl:editing.fotoUrl||null, logoUrl:editing.logoUrl||null, local:editing.local||'', contato:editing.contato||'', regras:editing.regras||'',
-      patrocinadores: (editing.patrocinadores||[]).slice()
-    } : { _editId:null, nome:'', edicao:'', dataInicio:'', dataFim:'', fotoUrl:null, logoUrl:null, local:'', contato:'', regras:'', patrocinadores:[] };
+      patrocinadores: (editing.patrocinadores||[]).slice(), quadrasNomes: (editing.quadrasNomes||[]).map(normQuadraNome), quadraNomeInput:'', quadraNomeLado:'esquerda'
+    } : { _editId:null, nome:'', edicao:'', dataInicio:'', dataFim:'', fotoUrl:null, logoUrl:null, local:'', contato:'', regras:'', patrocinadores:[], quadrasNomes:[], quadraNomeInput:'', quadraNomeLado:'esquerda' };
   }
   const s = eventoSetupState;
   const fotoPreview = s.fotoUrl ? `<img class="foto-upload-preview" src="${s.fotoUrl}">` : '';
   const logoPreview = s.logoUrl ? `<img class="logo-upload-preview" src="${s.logoUrl}">` : '';
   const patrocinadoresRow = s.patrocinadores.length ? `<div class="patrocinador-row">
     ${s.patrocinadores.map((url,i) => `<div class="patrocinador-thumb"><img src="${url}"><button class="rm" onclick="removePatrocinador(${i})">✕</button></div>`).join('')}
+  </div>` : '';
+  const quadrasNomesRow = s.quadrasNomes.length ? `<div class="quadra-nome-row">
+    ${s.quadrasNomes.map((q,i) => `<div class="quadra-nome-chip ${q.lado}">${escapeHtml(q.nome)}<span class="lado-tag">${q.lado==='direita'?'D':'E'}</span><button class="rm" onclick="removeQuadraNome(${i})">✕</button></div>`).join('')}
   </div>` : '';
   app.innerHTML = `
     ${header(editing ? 'Editar evento' : 'Novo evento', null, editing ? ('/evento/'+editing.id) : '/organizador')}
@@ -2279,6 +2328,17 @@ function renderEventoSetup(editId){
         <button class="btn ghost small foto-upload-btn" onclick="document.getElementById('eventoPatrocinadorInput').click()">🤝 Adicionar logo</button>
         <input type="file" id="eventoPatrocinadorInput" accept="image/*" multiple style="display:none;" onchange="onEventoPatrocinadorSelected(event)">
         ${patrocinadoresRow}
+        <label>Nomes das quadras (opcional)</label>
+        <div class="hint" style="margin-top:-2px;">Cadastre aqui os nomes das quadras desse evento e de que lado da arena cada uma fica (ex: "Quadra Central", esquerda). Isso alimenta o mapa de quadras (mostrado na tela do dia) e a lista pra marcar em qual quadra um jogo vai acontecer, no lugar de digitar um número.</div>
+        <div class="quadra-nome-add">
+          <input type="text" placeholder="Ex: Quadra Central" value="${escapeHtmlAttr(s.quadraNomeInput)}" oninput="eventoSetupState.quadraNomeInput=this.value" onkeydown="if(event.key==='Enter'){event.preventDefault(); addQuadraNome();}">
+          <select onchange="eventoSetupState.quadraNomeLado=this.value">
+            <option value="esquerda" ${s.quadraNomeLado==='esquerda'?'selected':''}>Lado esquerdo</option>
+            <option value="direita" ${s.quadraNomeLado==='direita'?'selected':''}>Lado direito</option>
+          </select>
+          <button class="btn ghost small" onclick="addQuadraNome()">+ Adicionar</button>
+        </div>
+        ${quadrasNomesRow}
       </div>
       <button class="btn" onclick="saveEventoSetup('${editId||''}')">${editing ? 'Salvar alterações' : 'Criar evento'}</button>
     </div>`;
@@ -2366,6 +2426,24 @@ function removePatrocinador(idx){
   eventoSetupState.patrocinadores = (eventoSetupState.patrocinadores || []).filter((_,i) => i !== idx);
   renderEventoSetup(eventoSetupState._editId || '');
 }
+// Lista de nomes de quadras do evento (Ed, 21/08/2026) — pedido pra trocar o
+// campo "quadra" de cada jogo (que hoje é um número digitado) por uma
+// seleção entre nomes cadastrados aqui antes, na edição do evento.
+function addQuadraNome(){
+  const s = eventoSetupState;
+  const nome = (s.quadraNomeInput || '').trim();
+  if(!nome){ toast('Digite um nome pra quadra'); return; }
+  const jaExiste = (s.quadrasNomes || []).some(q => q.nome.toLowerCase() === nome.toLowerCase());
+  if(jaExiste){ toast('Essa quadra já está na lista'); return; }
+  const lado = s.quadraNomeLado === 'direita' ? 'direita' : 'esquerda';
+  s.quadrasNomes = (s.quadrasNomes || []).concat([{ nome, lado }]);
+  s.quadraNomeInput = '';
+  renderEventoSetup(s._editId || '');
+}
+function removeQuadraNome(idx){
+  eventoSetupState.quadrasNomes = (eventoSetupState.quadrasNomes || []).filter((_,i) => i !== idx);
+  renderEventoSetup(eventoSetupState._editId || '');
+}
 function saveEventoSetup(editId){
   const s = eventoSetupState;
   if(!s.nome || !s.nome.trim()){ toast('Dê um nome para o evento'); return; }
@@ -2376,6 +2454,7 @@ function saveEventoSetup(editId){
     ev.nome = s.nome.trim(); ev.edicao = s.edicao.trim(); ev.dataInicio = s.dataInicio; ev.dataFim = s.dataFim; ev.fotoUrl = s.fotoUrl || null;
     ev.logoUrl = s.logoUrl || null;
     ev.patrocinadores = s.patrocinadores || [];
+    ev.quadrasNomes = s.quadrasNomes || [];
     ev.local = s.local.trim(); ev.contato = s.contato.trim(); ev.regras = s.regras.trim();
     updateEvento(ev);
     toast('Evento atualizado');
@@ -2384,7 +2463,7 @@ function saveEventoSetup(editId){
     // Nasce em rascunho — só o organizador vê até clicar em "Publicar evento".
     const ev = {
       id:uid('e'), nome:s.nome.trim(), edicao:s.edicao.trim(), dataInicio:s.dataInicio, dataFim:s.dataFim,
-      fotoUrl:s.fotoUrl||null, logoUrl:s.logoUrl||null, patrocinadores: s.patrocinadores || [],
+      fotoUrl:s.fotoUrl||null, logoUrl:s.logoUrl||null, patrocinadores: s.patrocinadores || [], quadrasNomes: s.quadrasNomes || [],
       local:s.local.trim(), contato:s.contato.trim(), regras:s.regras.trim(),
       publicado:false, criadoEm:Date.now()
     };
@@ -2466,6 +2545,7 @@ function renderEventoView(eventoId, selectedDia){
       <button class="btn secondary" style="margin-bottom:14px; width:100%;" onclick="location.hash='/cronograma/${eventoId}/'+encodeURIComponent('${dia}')">🗓️ Cronograma de quadras</button>
       ${dayTabs}
       ${body}
+      ${renderQuadraMapHtml(ev, dia)}
       <button class="btn accent" style="margin-top:6px;" onclick="location.hash='/nova-categoria/${eventoId}/'+encodeURIComponent('${dia}')">+ Nova categoria</button>
       <button class="btn ghost" style="margin-top:8px;" onclick="location.hash='/importar-lista/${eventoId}/'+encodeURIComponent('${dia}')">📥 Importar lista completa (todas as categorias)</button>
     </div>`;
@@ -2673,7 +2753,7 @@ function renderPubDiaView(eventoId, data){
   }).join('') : `<div class="empty"><div class="big">🏐</div><div style="font-weight:700;">Nenhuma categoria nesse dia</div></div>`;
   app.innerHTML = `
     ${header(formatDiaLabelFull(data), escapeHtml(ev.nome), '/pub/evento/'+eventoId)}
-    <div class="wrap">${body}${sponsorFooterHtml(ev)}</div>`;
+    <div class="wrap">${body}${renderQuadraMapHtml(ev, data)}${sponsorFooterHtml(ev)}</div>`;
 }
 function renderPubMatchCard(chave, g){
   const info = matchInfo(chave, g);
@@ -3704,6 +3784,77 @@ function montarTabelaCronogramaDia(ev, eventoId, dia){
     return row;
   });
   return { head, body, corMap, quadras: dc.quadras };
+}
+// Mapa visual das quadras (Ed, 21/08/2026): pra cada quadra ativa naquele dia
+// (mesma quantidade configurada no Cronograma de quadras), mostra o nome
+// cadastrado no evento + a categoria jogando ali agora (ou a próxima, se
+// ainda não começou), agrupadas por lado da arena (esquerda/direita — igual
+// a foto que ele mandou de referência). Reaproveita a MESMA grade que o
+// Cronograma já calcula (gerarGradeDia) — é literalmente a config de
+// "quadras por categoria" que o organizador define lá, só que exibida como
+// mapa em vez de tabela de horários. Fica abaixo da lista de categorias do
+// dia, tanto pro organizador quanto pro público (só leitura pros dois — a
+// edição é sempre em "Editar evento", nos nomes/lado das quadras).
+function renderQuadraMapHtml(ev, dia){
+  const dc = getDiaConfig(ev, dia);
+  if(!dc.quadras) return '';
+  const items = categoriasOfDia(ev.id, dia);
+  if(!items.length) return '';
+  const evForCalc = Object.assign({}, ev, { duracaoPadrao: ev.duracaoPadrao||30, duracaoDecisiva: ev.duracaoDecisiva||40 });
+  const { jogos } = gerarGradeDia(evForCalc, items, dc.quadras, dc.horaInicio);
+  if(!jogos.length) return '';
+
+  const inicioMin = hhmmToMin(dc.horaInicio) || 8*60;
+  const hojeStr = new Date().toISOString().slice(0,10);
+  let refMin;
+  if(dia === hojeStr){
+    const agora = new Date();
+    refMin = agora.getHours()*60 + agora.getMinutes();
+  } else {
+    refMin = inicioMin;
+  }
+
+  const nomes = (ev.quadrasNomes || []).map(normQuadraNome);
+  const boxes = [];
+  for(let i=0; i<dc.quadras; i++){
+    const q = nomes[i] || null;
+    const emAndamento = jogos.find(j => j.quadraIdx === i && refMin >= j.inicio && refMin < j.fim);
+    let cat = null, quando = null;
+    if(emAndamento){ cat = emAndamento.categoria; quando = 'agora'; }
+    else {
+      const proximos = jogos.filter(j => j.quadraIdx === i && j.inicio >= refMin).sort((a,b) => a.inicio - b.inicio);
+      if(proximos.length){ cat = proximos[0].categoria; quando = minToHHMM(proximos[0].inicio); }
+    }
+    boxes.push({ nome: q ? q.nome : ('Quadra ' + (i+1)), lado: q ? q.lado : 'esquerda', cat, quando });
+  }
+
+  function boxHtml(b){
+    const catHtml = b.cat
+      ? `<div class="quadra-mapa-cat">${escapeHtml(b.cat)}</div>${b.quando!=='agora' ? `<div class="quadra-mapa-tempo">a partir das ${escapeHtml(b.quando)}</div>` : ''}`
+      : `<div class="quadra-mapa-cat livre">Livre</div>`;
+    return `<div class="quadra-mapa-box ${b.quando==='agora'?'ocupada':''}">
+      <div class="quadra-mapa-nome">🏐 ${escapeHtml(b.nome)}</div>
+      ${catHtml}
+    </div>`;
+  }
+
+  const esquerda = boxes.filter(b => b.lado !== 'direita');
+  const direita = boxes.filter(b => b.lado === 'direita');
+  if(!esquerda.length && !direita.length) return '';
+
+  return `<div class="card quadra-mapa-card">
+    <div class="card-title">🗺️ Mapa das quadras${dia===hojeStr ? '' : ' <span class="hint" style="font-weight:500;">(prévia do dia)</span>'}</div>
+    <div class="quadra-mapa">
+      <div class="quadra-mapa-lado">
+        <div class="quadra-mapa-lado-label">Lado esquerdo</div>
+        ${esquerda.length ? esquerda.map(boxHtml).join('') : '<div class="hint">Nenhuma quadra desse lado</div>'}
+      </div>
+      <div class="quadra-mapa-lado">
+        <div class="quadra-mapa-lado-label">Lado direito</div>
+        ${direita.length ? direita.map(boxHtml).join('') : '<div class="hint">Nenhuma quadra desse lado</div>'}
+      </div>
+    </div>
+  </div>`;
 }
 // Calcula um tamanho de página sob medida pra tabela de um dia — em vez de
 // forçar A4/Letter e deixar o autotable quebrar em várias páginas quando tem
@@ -5083,8 +5234,30 @@ function renderMatchCard(chave, g){
     scoreArea = `<div class="hint" style="text-align:center;">W.O. · <span style="text-decoration:underline;cursor:pointer;" onclick="editMatch('${chave.id}',${g.num})">editar</span></div>`;
   }
 
-  const quadraField = !done ? `<div class="match-court">🏐 Quadra <input type="number" inputmode="numeric" min="1" placeholder="nº" value="${escapeHtmlAttr(quadra)}" onchange="setQuadra('${chave.id}',${g.num},this.value)"></div>` :
-    (quadra ? `<div class="match-court">🏐 Quadra ${escapeHtml(quadra)}</div>` : '');
+  // Quadra por nome (Ed, 21/08/2026): se o evento tem quadras cadastradas
+  // (organizador → editar evento), troca o campo numérico por uma lista com
+  // os nomes; sem nenhuma cadastrada, mantém o campo antigo (número livre)
+  // pra não quebrar quem ainda não configurou nada.
+  const _cat = categoriaByChaveId(chave.id);
+  const _ev = _cat ? getEvento(_cat.eventoId) : null;
+  const quadraNomes = ((_ev && _ev.quadrasNomes) || []).map(normQuadraNome).map(q => q.nome).filter(Boolean);
+  let quadraField;
+  if(!done){
+    if(quadraNomes.length){
+      const opts = quadraNomes.slice();
+      if(quadra && !opts.includes(quadra)) opts.push(quadra); // preserva valor antigo que não está mais na lista
+      quadraField = `<div class="match-court">🏐
+        <select onchange="setQuadra('${chave.id}',${g.num},this.value)">
+          <option value="">Selecionar…</option>
+          ${opts.map(nome => `<option value="${escapeHtmlAttr(nome)}" ${nome===quadra ? 'selected' : ''}>${escapeHtml(nome)}</option>`).join('')}
+        </select>
+      </div>`;
+    } else {
+      quadraField = `<div class="match-court">🏐 Quadra <input type="number" inputmode="numeric" min="1" placeholder="nº" value="${escapeHtmlAttr(quadra)}" onchange="setQuadra('${chave.id}',${g.num},this.value)"></div>`;
+    }
+  } else {
+    quadraField = quadra ? `<div class="match-court">🏐 Quadra ${escapeHtml(quadra)}</div>` : '';
+  }
   const andamentoBtn = (!done && info.ready) ? `<button class="andamento-btn ${st.key==='andamento'?'on':''}" onclick="toggleAndamento('${chave.id}',${g.num})">${st.key==='andamento' ? '⏸ Encerrar' : '▶ Iniciar jogo'}</button>` : '';
   const metaRow = (quadraField || andamentoBtn) ? `<div class="match-meta-row">${quadraField}${andamentoBtn}</div>` : '';
 
