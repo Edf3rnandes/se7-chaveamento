@@ -433,20 +433,32 @@ input[type=number]{text-align:center;}
   position:absolute; top:-6px; right:-6px; width:20px; height:20px; border-radius:50%; background:#a13a3a; color:#fff;
   border:none; font-size:12px; font-weight:800; cursor:pointer; line-height:1; display:flex; align-items:center; justify-content:center;
 }
-/* Lista de nomes de quadras cadastrados no evento (Ed, 21/08/2026) — chips de
-   texto simples, mesmo espírito visual dos thumbs de patrocinador acima. */
-.quadra-nome-row{display:flex; flex-wrap:wrap; gap:8px; margin-top:10px;}
-.quadra-nome-chip{
-  display:flex; align-items:center; gap:7px; background:#eef3ff; border:1px solid var(--border);
-  border-radius:20px; padding:6px 8px 6px 14px; font-size:13px; font-weight:700; color:var(--primary-dark);
+/* Lista de nomes de quadras cadastrados no evento (Ed, 21/08/2026) — editor em
+   duas colunas (esquerda/direita), espelhando o mapa, com ▲/▼ pra reordenar
+   dentro do lado ("mover a quadra para o lugar e ordem certa"). */
+.quadra-edit-cols{display:flex; gap:12px; margin-top:10px;}
+.quadra-edit-col{flex:1; display:flex; flex-direction:column; gap:6px; min-width:0;}
+.quadra-edit-col-label{font-size:10px; font-weight:800; letter-spacing:.05em; text-transform:uppercase; color:var(--muted2);}
+.quadra-edit-row{
+  display:flex; align-items:center; justify-content:space-between; gap:6px; background:#eef3ff;
+  border:1px solid var(--border); border-radius:10px; padding:6px 8px 6px 12px;
 }
-.quadra-nome-chip.direita{background:#fdeee0;}
-.quadra-nome-chip .lado-tag{
+.quadra-edit-nome{font-size:12.5px; font-weight:700; color:var(--primary-dark); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+.quadra-edit-actions{display:flex; align-items:center; gap:4px; flex:none;}
+.quadra-edit-actions .qmove{
+  width:20px; height:20px; border-radius:6px; background:#fff; border:1px solid var(--border); color:var(--text);
+  font-size:10px; font-weight:800; cursor:pointer; line-height:1; display:flex; align-items:center; justify-content:center; padding:0;
+}
+.quadra-edit-actions .qmove:hover:not(:disabled){background:var(--chip-blue); color:#fff; border-color:var(--chip-blue);}
+.quadra-edit-actions .qmove:disabled{opacity:.3; cursor:default;}
+.quadra-edit-actions .lado-tag{
   font-size:9px; font-weight:800; color:var(--muted2); background:#fff; border-radius:6px; padding:1px 5px; flex:none;
+  cursor:pointer; border:1px solid var(--border);
 }
-.quadra-nome-chip .rm{
+.quadra-edit-actions .lado-tag:hover{background:var(--chip-blue); color:#fff; border-color:var(--chip-blue);}
+.quadra-edit-actions .rm{
   width:18px; height:18px; border-radius:50%; background:#a13a3a; color:#fff; border:none;
-  font-size:11px; font-weight:800; cursor:pointer; line-height:1; display:flex; align-items:center; justify-content:center; flex:none;
+  font-size:11px; font-weight:800; cursor:pointer; line-height:1; display:flex; align-items:center; justify-content:center; flex:none; padding:0;
 }
 .quadra-nome-add{display:flex; gap:8px; align-items:center;}
 .quadra-nome-add input{flex:1;}
@@ -465,6 +477,10 @@ input[type=number]{text-align:center;}
 .quadra-mapa-cat{font-size:12px; color:var(--primary-dark); font-weight:700; margin-top:3px;}
 .quadra-mapa-cat.livre{color:var(--muted2); font-weight:500; font-style:italic;}
 .quadra-mapa-tempo{font-size:10px; color:var(--muted2); margin-top:1px;}
+.quadra-mapa-select{
+  width:100%; margin-top:7px; font-size:11px; font-weight:600; color:var(--text);
+  border:1px solid var(--border); border-radius:7px; padding:4px 6px; background:#fff;
+}
 .sponsor-footer{margin-top:22px; padding-top:16px; border-top:1px solid var(--border); text-align:center;}
 .sponsor-footer-label{font-size:10.5px; font-weight:800; letter-spacing:.06em; text-transform:uppercase; color:var(--muted2); margin-bottom:10px;}
 .sponsor-footer-logos{display:flex; flex-wrap:wrap; align-items:center; justify-content:center; gap:16px;}
@@ -2043,7 +2059,11 @@ function removeCategoriaStep(catId, idx){
 }
 function getDiaConfig(ev, data){
   const c = (ev.diasConfig && ev.diasConfig[data]) || {};
-  return { quadras: c.quadras || 0, horaInicio: c.horaInicio || '08:00', horaLimite: c.horaLimite || '' };
+  // quadraCategoria: {quadraIdx -> chaveId} — fixação manual de qual
+  // categoria aparece em qual quadra no mapa (Ed, 21/08/2026: "a ordem dos
+  // jogos e a disposição das categorias está errada", pediu uma opção pra
+  // alterar diretamente em vez de depender só do cálculo automático).
+  return { quadras: c.quadras || 0, horaInicio: c.horaInicio || '08:00', horaLimite: c.horaLimite || '', quadraCategoria: c.quadraCategoria || {} };
 }
 function setDiaConfig(eventoId, data, patch){
   const ev = getEvento(eventoId);
@@ -2051,6 +2071,18 @@ function setDiaConfig(eventoId, data, patch){
   ev.diasConfig = Object.assign({}, ev.diasConfig);
   ev.diasConfig[data] = Object.assign({}, getDiaConfig(ev, data), patch);
   updateEvento(ev);
+}
+// Fixa (ou libera, se chaveId for '') manualmente qual categoria aparece
+// numa quadra específica do mapa daquele dia — sobrepõe o cálculo automático
+// (gerarGradeDia) só pra essa quadra, só naquele dia.
+function setQuadraMapaCategoria(eventoId, dia, quadraIdx, chaveId){
+  const ev = getEvento(eventoId);
+  if(!ev) return;
+  const dc = getDiaConfig(ev, dia);
+  const quadraCategoria = Object.assign({}, dc.quadraCategoria);
+  if(chaveId) quadraCategoria[quadraIdx] = chaveId; else delete quadraCategoria[quadraIdx];
+  setDiaConfig(eventoId, dia, { quadraCategoria });
+  toast(chaveId ? 'Quadra atualizada' : 'Essa quadra voltou a seguir o horário automático');
 }
 function setEventoDuracao(eventoId, field, value){
   const ev = getEvento(eventoId);
@@ -2291,8 +2323,34 @@ function renderEventoSetup(editId){
   const patrocinadoresRow = s.patrocinadores.length ? `<div class="patrocinador-row">
     ${s.patrocinadores.map((url,i) => `<div class="patrocinador-thumb"><img src="${url}"><button class="rm" onclick="removePatrocinador(${i})">✕</button></div>`).join('')}
   </div>` : '';
-  const quadrasNomesRow = s.quadrasNomes.length ? `<div class="quadra-nome-row">
-    ${s.quadrasNomes.map((q,i) => `<div class="quadra-nome-chip ${q.lado}">${escapeHtml(q.nome)}<span class="lado-tag">${q.lado==='direita'?'D':'E'}</span><button class="rm" onclick="removeQuadraNome(${i})">✕</button></div>`).join('')}
+  // Lista dividida em duas colunas (esquerda/direita), espelhando o mapa —
+  // cada quadra tem ▲/▼ pra mover dentro do próprio lado (Ed, 21/08/2026:
+  // "mover a quadra para o lugar e ordem certa"), o botão da esquerda/direita
+  // pra trocar de coluna, e ✕ pra excluir. Os botões ▲/▼ ficam desabilitados
+  // na primeira/última posição de cada coluna.
+  function quadraEditRowHtml(q, idx, isFirst, isLast){
+    return `<div class="quadra-edit-row">
+      <div class="quadra-edit-nome">${escapeHtml(q.nome)}</div>
+      <div class="quadra-edit-actions">
+        <button class="qmove" title="Mover pra cima" ${isFirst?'disabled':''} onclick="moveQuadraNome(${idx},-1)">▲</button>
+        <button class="qmove" title="Mover pra baixo" ${isLast?'disabled':''} onclick="moveQuadraNome(${idx},1)">▼</button>
+        <span class="lado-tag" title="Trocar de lado" onclick="toggleQuadraLado(${idx})">${q.lado==='direita'?'D':'E'}</span>
+        <button class="rm" onclick="removeQuadraNome(${idx})">✕</button>
+      </div>
+    </div>`;
+  }
+  const quadrasEsquerdaIdxs = [];
+  const quadrasDireitaIdxs = [];
+  s.quadrasNomes.forEach((q,i) => { (q.lado==='direita' ? quadrasDireitaIdxs : quadrasEsquerdaIdxs).push(i); });
+  const quadrasNomesRow = s.quadrasNomes.length ? `<div class="quadra-edit-cols">
+    <div class="quadra-edit-col">
+      <div class="quadra-edit-col-label">Lado esquerdo</div>
+      ${quadrasEsquerdaIdxs.length ? quadrasEsquerdaIdxs.map((idx,pos) => quadraEditRowHtml(s.quadrasNomes[idx], idx, pos===0, pos===quadrasEsquerdaIdxs.length-1)).join('') : '<div class="hint">Nenhuma quadra desse lado</div>'}
+    </div>
+    <div class="quadra-edit-col">
+      <div class="quadra-edit-col-label">Lado direito</div>
+      ${quadrasDireitaIdxs.length ? quadrasDireitaIdxs.map((idx,pos) => quadraEditRowHtml(s.quadrasNomes[idx], idx, pos===0, pos===quadrasDireitaIdxs.length-1)).join('') : '<div class="hint">Nenhuma quadra desse lado</div>'}
+    </div>
   </div>` : '';
   app.innerHTML = `
     ${header(editing ? 'Editar evento' : 'Novo evento', null, editing ? ('/evento/'+editing.id) : '/organizador')}
@@ -2329,7 +2387,7 @@ function renderEventoSetup(editId){
         <input type="file" id="eventoPatrocinadorInput" accept="image/*" multiple style="display:none;" onchange="onEventoPatrocinadorSelected(event)">
         ${patrocinadoresRow}
         <label>Nomes das quadras (opcional)</label>
-        <div class="hint" style="margin-top:-2px;">Cadastre aqui os nomes das quadras desse evento e de que lado da arena cada uma fica (ex: "Quadra Central", esquerda). Isso alimenta o mapa de quadras (mostrado na tela do dia) e a lista pra marcar em qual quadra um jogo vai acontecer, no lugar de digitar um número.</div>
+        <div class="hint" style="margin-top:-2px;">Cadastre aqui os nomes das quadras desse evento e de que lado da arena cada uma fica (ex: "Quadra Central", esquerda). Isso alimenta o mapa de quadras (mostrado na tela do dia) e a lista pra marcar em qual quadra um jogo vai acontecer, no lugar de digitar um número. Use ▲/▼ pra colocar cada quadra na ordem certa dentro do seu lado (a ordem aqui é a mesma do mapa). ${editing ? 'Adicionar, excluir, mover e trocar de lado salvam na hora — não precisa clicar em "Salvar alterações" só por causa das quadras.' : ''}</div>
         <div class="quadra-nome-add">
           <input type="text" placeholder="Ex: Quadra Central" value="${escapeHtmlAttr(s.quadraNomeInput)}" oninput="eventoSetupState.quadraNomeInput=this.value" onkeydown="if(event.key==='Enter'){event.preventDefault(); addQuadraNome();}">
           <select onchange="eventoSetupState.quadraNomeLado=this.value">
@@ -2339,6 +2397,7 @@ function renderEventoSetup(editId){
           <button class="btn ghost small" onclick="addQuadraNome()">+ Adicionar</button>
         </div>
         ${quadrasNomesRow}
+        ${s.quadrasNomes.length ? `<button class="btn ghost small" style="margin-top:8px;" onclick="clearQuadrasNomes()">Excluir todas as quadras</button>` : ''}
       </div>
       <button class="btn" onclick="saveEventoSetup('${editId||''}')">${editing ? 'Salvar alterações' : 'Criar evento'}</button>
     </div>`;
@@ -2429,6 +2488,19 @@ function removePatrocinador(idx){
 // Lista de nomes de quadras do evento (Ed, 21/08/2026) — pedido pra trocar o
 // campo "quadra" de cada jogo (que hoje é um número digitado) por uma
 // seleção entre nomes cadastrados aqui antes, na edição do evento.
+// Adicionar/excluir/trocar lado de uma quadra salva NA HORA (updateEvento
+// direto) quando o evento já existe — não fica preso a clicar em "Salvar
+// alterações" lá embaixo, que é fácil de esquecer só pra essa lista (Ed,
+// 21/08/2026: "eu preciso excluir e adicionar corretamente"). Pra evento
+// ainda não criado (sem editId), só existe o estado local mesmo — não tem
+// documento no Firestore ainda pra gravar.
+function persistQuadrasNomesSeExistir(s){
+  if(!s._editId) return;
+  const ev = getEvento(s._editId);
+  if(!ev) return;
+  ev.quadrasNomes = s.quadrasNomes || [];
+  updateEvento(ev);
+}
 function addQuadraNome(){
   const s = eventoSetupState;
   const nome = (s.quadraNomeInput || '').trim();
@@ -2438,11 +2510,57 @@ function addQuadraNome(){
   const lado = s.quadraNomeLado === 'direita' ? 'direita' : 'esquerda';
   s.quadrasNomes = (s.quadrasNomes || []).concat([{ nome, lado }]);
   s.quadraNomeInput = '';
+  persistQuadrasNomesSeExistir(s);
   renderEventoSetup(s._editId || '');
+  toast('Quadra "' + nome + '" adicionada' + (s._editId ? '' : ' (clique em "Criar evento" pra salvar)'));
 }
 function removeQuadraNome(idx){
-  eventoSetupState.quadrasNomes = (eventoSetupState.quadrasNomes || []).filter((_,i) => i !== idx);
-  renderEventoSetup(eventoSetupState._editId || '');
+  const s = eventoSetupState;
+  const removida = (s.quadrasNomes || [])[idx];
+  s.quadrasNomes = (s.quadrasNomes || []).filter((_,i) => i !== idx);
+  persistQuadrasNomesSeExistir(s);
+  renderEventoSetup(s._editId || '');
+  toast(removida ? ('Quadra "' + removida.nome + '" excluída') : 'Quadra excluída');
+}
+function toggleQuadraLado(idx){
+  const s = eventoSetupState;
+  const q = (s.quadrasNomes || [])[idx];
+  if(!q) return;
+  q.lado = q.lado === 'direita' ? 'esquerda' : 'direita';
+  persistQuadrasNomesSeExistir(s);
+  renderEventoSetup(s._editId || '');
+}
+// Move uma quadra pra cima/baixo DENTRO do seu próprio lado (Ed, 21/08/2026:
+// "quero poder mover a quadra para o lugar e ordem certa, com a categoria e
+// quadra") — o array quadrasNomes intercala os dois lados livremente, então
+// "vizinho" aqui significa o PRÓXIMO índice na direção pedida que tenha o
+// MESMO lado, não necessariamente o índice adjacente no array. Isso faz um
+// clique sempre mover uma posição dentro da coluna visual (mapa e editor),
+// sem misturar com o outro lado. A ordem final do array é exatamente a ordem
+// usada pelo mapa (renderQuadraMapHtml lê nomes[i] em ordem).
+function moveQuadraNome(idx, dir){
+  const s = eventoSetupState;
+  const list = s.quadrasNomes || [];
+  const q = list[idx];
+  if(!q) return;
+  let j = idx + dir;
+  while(j >= 0 && j < list.length && list[j].lado !== q.lado) j += dir;
+  if(j < 0 || j >= list.length) return; // já é a primeira/última do seu lado
+  const tmp = list[j];
+  list[j] = list[idx];
+  list[idx] = tmp;
+  s.quadrasNomes = list;
+  persistQuadrasNomesSeExistir(s);
+  renderEventoSetup(s._editId || '');
+}
+function clearQuadrasNomes(){
+  const s = eventoSetupState;
+  if(!(s.quadrasNomes || []).length) return;
+  if(!confirm('Excluir todas as ' + s.quadrasNomes.length + ' quadras cadastradas nesse evento?')) return;
+  s.quadrasNomes = [];
+  persistQuadrasNomesSeExistir(s);
+  renderEventoSetup(s._editId || '');
+  toast('Todas as quadras foram excluídas');
 }
 function saveEventoSetup(editId){
   const s = eventoSetupState;
@@ -2545,7 +2663,7 @@ function renderEventoView(eventoId, selectedDia){
       <button class="btn secondary" style="margin-bottom:14px; width:100%;" onclick="location.hash='/cronograma/${eventoId}/'+encodeURIComponent('${dia}')">🗓️ Cronograma de quadras</button>
       ${dayTabs}
       ${body}
-      ${renderQuadraMapHtml(ev, dia)}
+      ${renderQuadraMapHtml(ev, dia, false)}
       <button class="btn accent" style="margin-top:6px;" onclick="location.hash='/nova-categoria/${eventoId}/'+encodeURIComponent('${dia}')">+ Nova categoria</button>
       <button class="btn ghost" style="margin-top:8px;" onclick="location.hash='/importar-lista/${eventoId}/'+encodeURIComponent('${dia}')">📥 Importar lista completa (todas as categorias)</button>
     </div>`;
@@ -2753,7 +2871,7 @@ function renderPubDiaView(eventoId, data){
   }).join('') : `<div class="empty"><div class="big">🏐</div><div style="font-weight:700;">Nenhuma categoria nesse dia</div></div>`;
   app.innerHTML = `
     ${header(formatDiaLabelFull(data), escapeHtml(ev.nome), '/pub/evento/'+eventoId)}
-    <div class="wrap">${body}${renderQuadraMapHtml(ev, data)}${sponsorFooterHtml(ev)}</div>`;
+    <div class="wrap">${body}${renderQuadraMapHtml(ev, data, true)}${sponsorFooterHtml(ev)}</div>`;
 }
 function renderPubMatchCard(chave, g){
   const info = matchInfo(chave, g);
@@ -3789,20 +3907,20 @@ function montarTabelaCronogramaDia(ev, eventoId, dia){
 // (mesma quantidade configurada no Cronograma de quadras), mostra o nome
 // cadastrado no evento + a categoria jogando ali agora (ou a próxima, se
 // ainda não começou), agrupadas por lado da arena (esquerda/direita — igual
-// a foto que ele mandou de referência). Reaproveita a MESMA grade que o
-// Cronograma já calcula (gerarGradeDia) — é literalmente a config de
-// "quadras por categoria" que o organizador define lá, só que exibida como
-// mapa em vez de tabela de horários. Fica abaixo da lista de categorias do
-// dia, tanto pro organizador quanto pro público (só leitura pros dois — a
-// edição é sempre em "Editar evento", nos nomes/lado das quadras).
-function renderQuadraMapHtml(ev, dia){
+// a foto que ele mandou de referência). Por padrão usa a MESMA grade que o
+// Cronograma já calcula (gerarGradeDia) — mas o Ed relatou que "a ordem dos
+// jogos e a disposição das categorias está errada", então cada quadra pode
+// ser FIXADA manualmente numa categoria (📌), sobrepondo o cálculo
+// automático só naquela quadra/dia — a opção de fixar só aparece pro
+// organizador (readOnly=false); o público sempre vê o resultado final, só
+// leitura.
+function renderQuadraMapHtml(ev, dia, readOnly){
   const dc = getDiaConfig(ev, dia);
   if(!dc.quadras) return '';
   const items = categoriasOfDia(ev.id, dia);
   if(!items.length) return '';
   const evForCalc = Object.assign({}, ev, { duracaoPadrao: ev.duracaoPadrao||30, duracaoDecisiva: ev.duracaoDecisiva||40 });
   const { jogos } = gerarGradeDia(evForCalc, items, dc.quadras, dc.horaInicio);
-  if(!jogos.length) return '';
 
   const inicioMin = hhmmToMin(dc.horaInicio) || 8*60;
   const hojeStr = new Date().toISOString().slice(0,10);
@@ -3815,26 +3933,44 @@ function renderQuadraMapHtml(ev, dia){
   }
 
   const nomes = (ev.quadrasNomes || []).map(normQuadraNome);
+  const overrides = dc.quadraCategoria || {};
   const boxes = [];
   for(let i=0; i<dc.quadras; i++){
     const q = nomes[i] || null;
-    const emAndamento = jogos.find(j => j.quadraIdx === i && refMin >= j.inicio && refMin < j.fim);
-    let cat = null, quando = null;
-    if(emAndamento){ cat = emAndamento.categoria; quando = 'agora'; }
-    else {
-      const proximos = jogos.filter(j => j.quadraIdx === i && j.inicio >= refMin).sort((a,b) => a.inicio - b.inicio);
-      if(proximos.length){ cat = proximos[0].categoria; quando = minToHHMM(proximos[0].inicio); }
+    let cat = null, quando = null, manual = false;
+    const overrideChaveId = overrides[i] || '';
+    if(overrideChaveId){
+      const overrideChave = getChave(overrideChaveId);
+      if(overrideChave){ cat = overrideChave.nome; manual = true; }
     }
-    boxes.push({ nome: q ? q.nome : ('Quadra ' + (i+1)), lado: q ? q.lado : 'esquerda', cat, quando });
+    if(!manual){
+      const emAndamento = jogos.find(j => j.quadraIdx === i && refMin >= j.inicio && refMin < j.fim);
+      if(emAndamento){ cat = emAndamento.categoria; quando = 'agora'; }
+      else {
+        const proximos = jogos.filter(j => j.quadraIdx === i && j.inicio >= refMin).sort((a,b) => a.inicio - b.inicio);
+        if(proximos.length){ cat = proximos[0].categoria; quando = minToHHMM(proximos[0].inicio); }
+      }
+    }
+    boxes.push({ idx:i, nome: q ? q.nome : ('Quadra ' + (i+1)), lado: q ? q.lado : 'esquerda', cat, quando, manual, overrideChaveId });
+  }
+
+  function selectHtml(b){
+    if(readOnly) return '';
+    const opts = items.map(({chave}) => `<option value="${chave.id}" ${b.overrideChaveId===chave.id ? 'selected' : ''}>${escapeHtml(chave.nome)}</option>`).join('');
+    return `<select class="quadra-mapa-select" onchange="setQuadraMapaCategoria('${ev.id}','${dia}',${b.idx},this.value)">
+      <option value="">Automático (conforme horário)</option>
+      ${opts}
+    </select>`;
   }
 
   function boxHtml(b){
     const catHtml = b.cat
-      ? `<div class="quadra-mapa-cat">${escapeHtml(b.cat)}</div>${b.quando!=='agora' ? `<div class="quadra-mapa-tempo">a partir das ${escapeHtml(b.quando)}</div>` : ''}`
+      ? `<div class="quadra-mapa-cat">${b.manual ? '📌 ' : ''}${escapeHtml(b.cat)}</div>${(!b.manual && b.quando && b.quando!=='agora') ? `<div class="quadra-mapa-tempo">a partir das ${escapeHtml(b.quando)}</div>` : ''}`
       : `<div class="quadra-mapa-cat livre">Livre</div>`;
-    return `<div class="quadra-mapa-box ${b.quando==='agora'?'ocupada':''}">
+    return `<div class="quadra-mapa-box ${(b.quando==='agora'||b.manual) ? 'ocupada' : ''}">
       <div class="quadra-mapa-nome">🏐 ${escapeHtml(b.nome)}</div>
       ${catHtml}
+      ${selectHtml(b)}
     </div>`;
   }
 
@@ -3844,6 +3980,7 @@ function renderQuadraMapHtml(ev, dia){
 
   return `<div class="card quadra-mapa-card">
     <div class="card-title">🗺️ Mapa das quadras${dia===hojeStr ? '' : ' <span class="hint" style="font-weight:500;">(prévia do dia)</span>'}</div>
+    ${readOnly ? '' : '<div class="hint" style="margin-top:-4px; margin-bottom:8px;">Por padrão a quadra mostra a categoria calculada pelo Cronograma. Se a ordem estiver errada, escolha manualmente a categoria certa em cada quadra abaixo (📌 fixado).</div>'}
     <div class="quadra-mapa">
       <div class="quadra-mapa-lado">
         <div class="quadra-mapa-lado-label">Lado esquerdo</div>
@@ -4716,6 +4853,31 @@ function computeTreeCanvas(chave){
     // positions FINAL to the left and 3º/4º to the right within the shared
     // center column), so here they both just get the midline row.
     finalGames.forEach(g => { yOf[g.num] = midline; });
+
+    // Some sizes' repescagem/placement wiring doesn't split evenly between
+    // the two halves — its "Venc J" forward-chain traces almost entirely
+    // into ONE half instead of two roughly mirrored streams (e.g. N=18,
+    // where the structural split came out 1 game "top" vs 13 "bottom"). The
+    // per-half layout above squeezes nearly the whole placement bracket into
+    // one half's narrow row-band while the other half's right-side zone
+    // sits almost empty — reported live, mid-tournament (21/08/2026), by Ed
+    // as "todos estão na repescagem lá embaixo" (everything crammed down at
+    // the bottom of the árvore). This is purely a display concern — who
+    // plays whom, results and the ranking/rematch invariants never look at
+    // this half split — so when it's this lopsided, override just the
+    // repescagem games' rows with ONE unified sequence spread evenly across
+    // the full vertical span the two halves already occupy, instead of
+    // pinning them to whichever half they happened to structurally trace to.
+    const topRepCount = repescagemGames.filter(g => halfOf[g.num] === 'top').length;
+    const bottomRepCount = repescagemGames.filter(g => halfOf[g.num] === 'bottom').length;
+    const repescagemLopsided = repescagemGames.length >= 4 && Math.min(topRepCount, bottomRepCount) <= 1;
+    if(repescagemLopsided){
+      const totalSpan = bottomOffset + bottomL.maxY;
+      const repL = layoutRowGroup(repescagemGames, bm, 0, roundOf);
+      repescagemGames.forEach(g => {
+        yOf[g.num] = repL.maxY > 0 ? (repL.y[g.num] / repL.maxY) * totalSpan : totalSpan / 2;
+      });
+    }
   }
   const posOf = {};
   games.forEach(g => { posOf[g.num] = { col: colOf[g.num] }; });
