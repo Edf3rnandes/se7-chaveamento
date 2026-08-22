@@ -4299,6 +4299,8 @@ function visaoGeralBoxHtml(b, readOnly){
     return `<div class="vg-box"><div class="vg-court">${header}${catLine}</div><div class="hint" style="margin-top:6px;">${msg}</div></div>`;
   }
   const g = b.game;
+  const chave = getChave(b.chaveId);
+  const chip = chaveBadgeInfo(chave, g);
   const rowA = teamRow(g.A, false, null, false);
   const rowB = teamRow(g.B, false, null, false);
   const badge = g.andamento ? `<span class="match-badge live">● Em andamento</span>` : `<span class="match-badge ready">Próximo</span>`;
@@ -4308,14 +4310,20 @@ function visaoGeralBoxHtml(b, readOnly){
   if(!readOnly){
     actions = expanded
       ? `<button class="andamento-btn ${g.andamento?'on':''}" onclick="toggleAndamento('${b.chaveId}',${g.num})">${g.andamento ? '⏸ Encerrar' : '▶ Iniciar jogo'}</button>
-         ${scoreEntryHtml(getChave(b.chaveId), { num:g.num, fase:g.fase })}
+         ${scoreEntryHtml(chave, { num:g.num, fase:g.fase })}
          <div class="vg-toggle-btn" onclick="toggleVgExpand('${b.chaveId}',${g.num})">▲ Recolher</div>`
       : `<div class="vg-toggle-btn primary" onclick="toggleVgExpand('${b.chaveId}',${g.num})">✓ Lançar placar</div>`;
   }
   return `<div class="vg-box ${g.andamento?'live':''}">
     <div class="vg-court">${header}${catLine}</div>
     <div class="vg-game">
-      <div class="match-top"><span class="match-num">#${g.num}</span><span class="spacer"></span>${badge}</div>
+      <div class="match-top">
+        <span class="match-num">#${g.num}</span>
+        <span class="chave-chip ${chip.cls}">${escapeHtml(chip.label)}</span>
+        ${chip.round ? `<span class="match-round">R${chip.round}</span>` : ''}
+        <span class="spacer"></span>
+        ${badge}
+      </div>
       ${teamsPairHtml(rowA, rowB)}
       ${actions}
     </div>
