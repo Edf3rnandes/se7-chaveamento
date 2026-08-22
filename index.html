@@ -5248,26 +5248,17 @@ function renderTreeView(chave, readOnly){
     const midX = Math.round((x1 + x2) / 2);
     return `<path d="M${x1},${y1} H${midX} V${y2} H${x2}" class="tree-line"/>`;
   }
+  // Ed pediu (21/08/2026) pra voltar como já tínhamos ajustado antes: SEM
+  // linha nenhuma entrando na repescagem (só o texto da caixa mesmo diz de
+  // onde veio cada dupla) e, agora, SEM linha nenhuma entrando na semifinal
+  // também — igual já era pro Final/3º-4º. A tentativa de traçar a linha do
+  // perdedor pros jogos "só Perd J" (feita mais cedo hoje, pra tentar deixar
+  // mais claro visualmente quem se enfrenta na repescagem) foi revertida.
   let connectors = '';
   games.forEach(g => {
-    if(g.fase === 'Final' || g.fase === '3º/4º') return;
-    const winnerSrcs = [g.a, g.b].map(refWinnerGameNum).filter(n => n && geom[n]);
-    if(winnerSrcs.length){
-      winnerSrcs.forEach(srcNum => { connectors += connectAuto(srcNum, g.num); });
-      return;
-    }
-    // Nem "Venc J" nem nada pra traçar acima — acontece quando um jogo reúne
-    // diretamente os PERDEDORES de duas partidas anteriores (a entrada da
-    // repescagem, ex.: "Perd J25 x Perd J26"). Sem NENHUMA linha essas caixas
-    // ficam com cara de soltas, sem ligação visual com nada — Ed reportou
-    // isso ao vivo, num torneio (21/08/2026): "quem perde no jogo 25 e 26
-    // não se enfrentam", quando na verdade os dados já resolviam certo (veja
-    // diag_n18_g29.js) — a confusão era só visual, por falta de linha. Nesse
-    // caso específico (e só nesse — todo o resto da repescagem continua com
-    // linha somente do vencedor, como o Ed pediu antes), traça a linha dos
-    // dois perdedores também, pra toda caixa ter pelo menos uma entrada.
+    if(g.fase === 'Final' || g.fase === '3º/4º' || g.fase === 'S/Final') return;
     [g.a, g.b].forEach(ref => {
-      const srcNum = refGameNum(ref);
+      const srcNum = refWinnerGameNum(ref);
       if(srcNum && geom[srcNum]) connectors += connectAuto(srcNum, g.num);
     });
   });
