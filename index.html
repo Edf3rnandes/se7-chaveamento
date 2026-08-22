@@ -510,6 +510,13 @@ input[type=number]{text-align:center;}
 .vg-cat{font-size:11.5px; color:var(--primary-dark); font-weight:700;}
 .vg-game{margin-top:8px; padding-top:8px; border-top:1px dashed var(--border);}
 .vg-game .andamento-btn{width:100%; margin-top:8px;}
+.vg-toggle-btn{
+  text-align:center; font-size:12.5px; font-weight:700; color:var(--chip-blue); text-decoration:underline;
+  cursor:pointer; margin-top:8px; padding:4px 0;
+}
+.vg-toggle-btn.primary{
+  background:var(--chip-blue); color:#fff; text-decoration:none; border-radius:8px; padding:8px 0; font-weight:800;
+}
 .sponsor-footer{margin-top:22px; padding-top:16px; border-top:1px solid var(--border); text-align:center;}
 .sponsor-footer-label{font-size:10.5px; font-weight:800; letter-spacing:.06em; text-transform:uppercase; color:var(--muted2); margin-bottom:10px;}
 .sponsor-footer-logos{display:flex; flex-wrap:wrap; align-items:center; justify-content:center; gap:16px;}
@@ -2153,14 +2160,7 @@ function getDiaConfig(ev, data){
   // categoria aparece em qual quadra no mapa (Ed, 21/08/2026: "a ordem dos
   // jogos e a disposição das categorias está errada", pediu uma opção pra
   // alterar diretamente em vez de depender só do cálculo automático).
-  // quadraJogoAtual: {quadraIdx -> {chaveId, gnum}} — qual confronto
-  // ESPECÍFICO a Visão Geral (22/08/2026) está mostrando "ao vivo" em cada
-  // quadra agora. Precisa ficar salvo (não só recalculado a cada render):
-  // se recalculasse do zero toda vez a partir da fila de jogos prontos da
-  // categoria, terminar um jogo numa quadra reembaralhava a posição na fila
-  // e fazia OUTRA quadra, que nem tinha mexido em nada, pular pro jogo
-  // seguinte no meio de uma partida em andamento.
-  return { quadras: c.quadras || 0, horaInicio: c.horaInicio || '08:00', horaLimite: c.horaLimite || '', quadraCategoria: c.quadraCategoria || {}, quadraJogoAtual: c.quadraJogoAtual || {} };
+  return { quadras: c.quadras || 0, horaInicio: c.horaInicio || '08:00', horaLimite: c.horaLimite || '', quadraCategoria: c.quadraCategoria || {} };
 }
 function setDiaConfig(eventoId, data, patch){
   const ev = getEvento(eventoId);
@@ -4191,61 +4191,77 @@ function computeVisaoGeralBoxes(ev, dia){
     return prontos;
   }
 
-  // Qual confronto ESPECÍFICO cada quadra mostra fica FIXO (persistido em
-  // dc.quadraJogoAtual) enquanto continuar pronto e sem resultado — só troca
-  // quando o jogo preso naquela quadra termina (ou deixa de ser válido, ex.
-  // a quadra mudou de categoria). Sem essa fixação, terminar um jogo numa
-  // quadra reembaralhava a fila inteira da categoria e fazia outra quadra —
-  // que ninguém mexeu — pular pro jogo seguinte no meio de uma partida.
-  const atual = Object.assign({}, dc.quadraJogoAtual || {});
-  const claimedNums = {}; // chaveId -> Set de gnums já reservados por alguma quadra
-  let changed = false;
+  // Qual confronto cada quadra mostra usa o MESMO campo "🏐 Quadra" que já
+  // aparece na lista de Confrontos de cada categoria (chave.quadras[gnum]) —
+  // não uma atribuição paralela só desta tela. Ed (22/08/2026) relatou que a
+  // Visão Geral "não segue a quadra que eu informei" e "não aceita a quadra
+  // na lista confrontos": a primeira versão mantinha seu PRÓPRIO controle de
+  // qual jogo está em qual quadra, então uma quadra já escolhida à mão na
+  // lista de Confrontos não era respeitada aqui, e o inverso também — o jogo
+  // que a Visão Geral escolhia sozinha não aparecia com quadra na lista.
+  // Agora os dois lugares leem e escrevem o mesmo campo.
+  const claimedNums = {}; // chaveId -> Set de gnums já reservados por alguma quadra nesta passada
+  const chosenFor = {};   // idx -> item da fila escolhido pra essa quadra
+  const activeCourtNames = new Set(courtOf.map(co => {
+    const q = nomes[co.idx] || null;
+    return q ? q.nome : ('Quadra ' + (co.idx+1));
+  }));
 
-  // Passada 1: toda quadra cujo jogo preso AINDA é válido (pronto, sem
-  // resultado, mesma categoria) reserva esse número JÁ — antes de qualquer
-  // quadra sem jogo preso sair escolhendo. Sem isso, processar as quadras em
-  // ordem deixava uma quadra que precisava de um jogo NOVO roubar o número
-  // que outra quadra (ainda não processada) já tinha preso e estava jogando
-  // de verdade.
+  // Passada 1: toda quadra cujo nome JÁ está escrito no campo "quadra" de
+  // algum jogo pronto daquela categoria (fixado à mão na lista de
+  // Confrontos, ou herdado de uma rodada anterior desta própria tela) usa
+  // esse jogo — reservado antes de qualquer escolha automática, pra nunca
+  // ser "roubado" por outra quadra sem jogo ainda.
   courtOf.forEach(co => {
+    const q = nomes[co.idx] || null;
+    const nome = q ? q.nome : ('Quadra ' + (co.idx+1));
     if(!co.chaveId) return;
-    const pinned = atual[co.idx];
-    if(!pinned || pinned.chaveId !== co.chaveId) return;
+    const chave = getChave(co.chaveId);
+    if(!chave) return;
     const fila = filaDe(co.chaveId);
-    const stillReady = fila.some(x => x.g.num === pinned.gnum);
-    if(!stillReady) return;
     claimedNums[co.chaveId] = claimedNums[co.chaveId] || new Set();
-    if(claimedNums[co.chaveId].has(pinned.gnum)) return; // dois override apontando pra mesma categoria com o mesmo jogo preso — improvável, mas não deixa duplicar
-    claimedNums[co.chaveId].add(pinned.gnum);
+    const match = fila.find(x => !claimedNums[co.chaveId].has(x.g.num) && ((chave.quadras||{})[x.g.num] || '').trim() === nome);
+    if(match){ claimedNums[co.chaveId].add(match.g.num); chosenFor[co.idx] = match; }
   });
 
-  // Passada 2: monta as caixas de verdade — quadra com reserva válida usa
-  // ela; as demais pegam o próximo item livre da fila (índice de quadra
-  // crescente), e só ALI a atribuição persistida é atualizada.
-  const boxes = courtOf.map(co => {
+  // Passada 2: quadra sem jogo reservado ainda pega o próximo item livre da
+  // fila que NÃO esteja preso numa quadra diferente (o organizador pode ter
+  // marcado esse jogo pra outra quadra de propósito) — e ESCREVE o nome da
+  // quadra nele, pra ficar igual na lista de Confrontos também.
+  const toWrite = []; // {chave, gnum, nome}
+  courtOf.forEach(co => {
+    if(!co.chaveId || chosenFor[co.idx]) return;
+    const chave = getChave(co.chaveId);
+    if(!chave) return;
+    const q = nomes[co.idx] || null;
+    const nome = q ? q.nome : ('Quadra ' + (co.idx+1));
+    const fila = filaDe(co.chaveId);
+    claimedNums[co.chaveId] = claimedNums[co.chaveId] || new Set();
+    const candidate = fila.find(x => {
+      if(claimedNums[co.chaveId].has(x.g.num)) return false;
+      const assigned = ((chave.quadras||{})[x.g.num] || '').trim();
+      return !assigned || !activeCourtNames.has(assigned);
+    });
+    if(candidate){
+      claimedNums[co.chaveId].add(candidate.g.num);
+      chosenFor[co.idx] = candidate;
+      toWrite.push({ chave, gnum: candidate.g.num, nome });
+    }
+  });
+  if(toWrite.length){
+    const chavesToSave = new Set();
+    toWrite.forEach(w => { w.chave.quadras = Object.assign({}, w.chave.quadras, { [w.gnum]: w.nome }); chavesToSave.add(w.chave); });
+    chavesToSave.forEach(c => updateChave(c));
+  }
+
+  return courtOf.map(co => {
     const q = nomes[co.idx] || null;
     const nome = q ? q.nome : ('Quadra ' + (co.idx+1));
     const lado = q ? q.lado : 'esquerda';
-    if(!co.chaveId){
-      if(atual[co.idx]){ delete atual[co.idx]; changed = true; }
-      return { idx:co.idx, nome, lado, chaveId:null, chaveNome:null, manual:false, game:null, state:'livre' };
-    }
+    if(!co.chaveId) return { idx:co.idx, nome, lado, chaveId:null, chaveNome:null, manual:false, game:null, state:'livre' };
     const chave = getChave(co.chaveId);
     if(!chave) return { idx:co.idx, nome, lado, chaveId:null, chaveNome:null, manual:false, game:null, state:'livre' };
-
-    const fila = filaDe(co.chaveId);
-    const byNum = {}; fila.forEach(x => byNum[x.g.num] = x);
-    claimedNums[co.chaveId] = claimedNums[co.chaveId] || new Set();
-
-    const pinned = atual[co.idx];
-    const pinnedValid = pinned && pinned.chaveId === co.chaveId && byNum[pinned.gnum] && claimedNums[co.chaveId].has(pinned.gnum);
-    let chosen = pinnedValid ? byNum[pinned.gnum] : null;
-    if(!chosen){
-      chosen = fila.find(x => !claimedNums[co.chaveId].has(x.g.num)) || null;
-      if(chosen){ atual[co.idx] = { chaveId: co.chaveId, gnum: chosen.g.num }; claimedNums[co.chaveId].add(chosen.g.num); changed = true; }
-      else if(pinned){ delete atual[co.idx]; changed = true; }
-    }
-
+    const chosen = chosenFor[co.idx];
     if(!chosen){
       const total = effectiveGames(chave).length;
       const done = effectiveGames(chave).filter(g => chave.resultados[g.num] && chave.resultados[g.num].vencedorSlot).length;
@@ -4260,11 +4276,18 @@ function computeVisaoGeralBoxes(ev, dia){
       state: 'live'
     };
   });
-
-  if(changed) setDiaConfig(ev.id, dia, { quadraJogoAtual: atual });
-  return boxes;
 }
 
+// Cada caixa nasce RECOLHIDA (só nomes + placar de status) — só expande pra
+// mostrar o formulário de placar quando o organizador toca em "Lançar
+// placar". Ed (22/08/2026): "ficou muito extenso, não dá pra ler direito"
+// com todas as caixas já abertas com sets/confirmar/W.O. ao mesmo tempo.
+let vgExpanded = {};
+function toggleVgExpand(chaveId, gnum){
+  const key = chaveId + '_' + gnum;
+  vgExpanded[key] = !vgExpanded[key];
+  route();
+}
 function visaoGeralBoxHtml(b, readOnly){
   const header = `<div class="quadra-mapa-nome">🏐 ${escapeHtml(b.nome)}</div>`;
   if(b.state === 'livre'){
@@ -4279,9 +4302,16 @@ function visaoGeralBoxHtml(b, readOnly){
   const rowA = teamRow(g.A, false, null, false);
   const rowB = teamRow(g.B, false, null, false);
   const badge = g.andamento ? `<span class="match-badge live">● Em andamento</span>` : `<span class="match-badge ready">Próximo</span>`;
-  const actions = readOnly ? '' : `
-    <button class="andamento-btn ${g.andamento?'on':''}" onclick="toggleAndamento('${b.chaveId}',${g.num})">${g.andamento ? '⏸ Encerrar' : '▶ Iniciar jogo'}</button>
-    ${scoreEntryHtml(getChave(b.chaveId), { num:g.num, fase:g.fase })}`;
+  const key = b.chaveId + '_' + g.num;
+  const expanded = !readOnly && !!vgExpanded[key];
+  let actions = '';
+  if(!readOnly){
+    actions = expanded
+      ? `<button class="andamento-btn ${g.andamento?'on':''}" onclick="toggleAndamento('${b.chaveId}',${g.num})">${g.andamento ? '⏸ Encerrar' : '▶ Iniciar jogo'}</button>
+         ${scoreEntryHtml(getChave(b.chaveId), { num:g.num, fase:g.fase })}
+         <div class="vg-toggle-btn" onclick="toggleVgExpand('${b.chaveId}',${g.num})">▲ Recolher</div>`
+      : `<div class="vg-toggle-btn primary" onclick="toggleVgExpand('${b.chaveId}',${g.num})">✓ Lançar placar</div>`;
+  }
   return `<div class="vg-box ${g.andamento?'live':''}">
     <div class="vg-court">${header}${catLine}</div>
     <div class="vg-game">
