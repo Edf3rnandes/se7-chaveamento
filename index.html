@@ -4755,47 +4755,62 @@ function computeTreeHalves(chave){
   return { halfOf, semiTop, semiBottom, finalGame };
 }
 
-// Fractional-average-then-de-collide layout (a game centers on the average
-// row-unit of its two feeders; ties within the same round get pushed apart
-// by at least one unit so nothing ever renders on top of another box),
-// scoped to a single group of games and offset by yBase. Returns both the
-// row units and the highest one used, so the caller can stack the next
-// group right below this one.
+// Recursive tree layout (Ed, 21/08/2026 — replaces the old round-by-round
+// "average then de-collide by game number" pass). Every game in the group
+// either has 0 in-group feeders (a genuinely fresh pairing — a "leaf") or 1-2
+// in-group feeders (an earlier game in the SAME group it descends from). By
+// walking the group as a forest — starting from whichever games nothing else
+// in the group depends on, recursing depth-first into each game's feeders,
+// and only handing out a fresh row number when we hit an actual leaf — every
+// game's row lands strictly between its own feeders' rows, and two sibling
+// branches can never end up sharing or crossing row numbers (each branch's
+// leaves claim a contiguous block before the next branch starts numbering).
+// That guarantees zero collisions with no separate de-collide pass needed,
+// and — the actual point of the rewrite — a game that "returns" from an
+// earlier round (e.g. a seed waiting on the winner of the very first game)
+// lands right next to that earlier game instead of being shoved down past
+// whatever fresh pairings happen to have lower game numbers in the same
+// round. Diagnosed on the 26-duplas árvore (screenshots, 21/08/2026): jogo 11
+// (seed 1 vs. winner of jogo 1) sat 2 full rows below jogo 1, because jogos 2
+// and 3 — two fresh pairings with lower numbers but no relation to jogo 11 —
+// used to get squeezed in between them by the old number-order pass. Its
+// connector line had to sweep across half the tree to reach jogo 29, which
+// is exactly what Ed circled as confusing.
+//
+// Trade-off worth knowing about: game number is no longer guaranteed to read
+// top-to-bottom within a round (that was the old pass's whole job). A
+// returning game can now land above a lower-numbered fresh pairing when that
+// keeps it next to the earlier game it depends on — the previous fix for a
+// 17-duplas árvore (jogo 9 printing above jogos 7/8) specifically avoided
+// that. Ed opted for this trade explicitly (21/08/2026) after seeing both
+// pulls can't be satisfied at once.
 function layoutRowGroup(groupGames, bm, yBase, roundOf){
-  const rOf = roundOf || (gnum => (bm.meta[gnum] && bm.meta[gnum].round) || 1);
-  const byRound = {};
-  groupGames.forEach(g => {
-    const r = rOf(g.num);
-    (byRound[r] = byRound[r] || []).push(g);
-  });
-  const rounds = Object.keys(byRound).map(Number).sort((a,b) => a-b);
   const selected = new Set(groupGames.map(g => g.num));
-  const y = {};
-  rounds.forEach(r => {
-    let seq = 0;
-    const sorted = byRound[r].slice().sort((a,b) => a.num - b.num);
-    sorted.forEach(g => {
-      const pa = refGameNum(g.a), pb = refGameNum(g.b);
-      const ys = [pa, pb].filter(n => n !== null && selected.has(n) && y[n] !== undefined).map(n => y[n]);
-      if(ys.length) y[g.num] = ys.reduce((s,v) => s+v, 0) / ys.length;
-      else y[g.num] = seq++;
-    });
-    // Walk the gap-enforcement pass in NUM order (not sorted by the just-
-    // computed y-average) — a game whose average happens to land near an
-    // earlier game's slot (e.g. a "seed 1 waits for the preliminary's
-    // winner" game landing near the preliminary itself) would otherwise get
-    // threaded in between lower-numbered games instead of after all of
-    // them, breaking the top-to-bottom reading order within a round (Ed
-    // flagged this directly on a 17-duplas árvore: jogo 9 was printed above
-    // jogo 7 and 8). The y-average is still used for round 2+ boxes to bias
-    // them toward sitting between their two parent boxes — this only
-    // changes which row order the enforcement loop nudges them in.
-    const order = sorted;
-    for(let i = 1; i < order.length; i++){
-      const prev = order[i-1], cur = order[i];
-      if(y[cur.num] < y[prev.num] + 1) y[cur.num] = y[prev.num] + 1;
-    }
+  const childrenOf = {};
+  const hasParent = new Set();
+  groupGames.forEach(g => {
+    const pa = refGameNum(g.a), pb = refGameNum(g.b);
+    const kids = [pa, pb].filter(n => n !== null && selected.has(n));
+    childrenOf[g.num] = kids;
+    kids.forEach(k => hasParent.add(k));
   });
+  const roots = groupGames.filter(g => !hasParent.has(g.num)).sort((a,b) => a.num - b.num);
+
+  const y = {};
+  let leafSeq = 0;
+  function place(gnum){
+    if(y[gnum] !== undefined) return; // already visited (defensive; shouldn't happen for this bracket shape)
+    const kids = childrenOf[gnum].slice().sort((a,b) => a-b);
+    if(kids.length === 0){
+      y[gnum] = leafSeq++;
+      return;
+    }
+    kids.forEach(place);
+    const ys = kids.map(k => y[k]);
+    y[gnum] = ys.reduce((s,v) => s+v, 0) / ys.length;
+  }
+  roots.forEach(g => place(g.num));
+
   let maxY = yBase - 1;
   groupGames.forEach(g => { y[g.num] += yBase; if(y[g.num] > maxY) maxY = y[g.num]; });
   return { y, maxY };
