@@ -187,24 +187,28 @@ input[type=number]{text-align:center;}
 .match-badge.wait{background:#f3efe2; color:#a68e4f;}
 .match-badge.ready{background:var(--chip-blue); color:#fff;}
 .match-badge.done{background:var(--success-bg); color:var(--success);}
-.team-row{
-  display:flex; align-items:center; gap:7px; padding:6px 10px; margin-bottom:4px; border-radius:9px;
-  background:var(--team-bg);
+/* Os dois times de um confronto lado a lado, não mais empilhados (Ed,
+   21/08/2026: "altere na lista para os times ficarem um do lado do outro
+   para diminuir a lista e melhorar a visão do expectador") — cada dupla é
+   uma célula (.team-cell) dentro de .match-teams-row, com um "×" no meio. */
+.match-teams-row{display:flex; align-items:stretch; gap:6px; margin-bottom:4px;}
+.team-cell{
+  flex:1; min-width:0; display:flex; flex-direction:column; align-items:center; justify-content:center;
+  gap:4px; padding:7px 6px; border-radius:9px; background:var(--team-bg); text-align:center;
 }
-.team-row:last-of-type{margin-bottom:0;}
-.team-row .tname{flex:1; font-size:13.5px; font-weight:600; min-width:0; line-height:1.25; word-break:break-word;}
-.team-row.placeholder .tname{color:var(--muted2); font-weight:500; font-style:italic;}
-.team-row.winner{background:var(--winner-bg);}
-.team-row.winner .tname{color:var(--primary-dark); font-weight:800;}
+.match-teams-row .vs-sep{flex:none; align-self:center; font-size:11px; font-weight:800; color:var(--muted2);}
+.team-cell .tname{font-size:13px; font-weight:600; min-width:0; line-height:1.25; word-break:break-word;}
+.team-cell.placeholder .tname{color:var(--muted2); font-weight:500; font-style:italic;}
+.team-cell.winner{background:var(--winner-bg);}
+.team-cell.winner .tname{color:var(--primary-dark); font-weight:800;}
 /* Dupla já classificada pra essa fase mas o jogo ainda não formou (esperando
    o adversário) — negrito pra achar rápido quem já avançou (Ed, 21/08/2026). */
-.team-row.waiting-opponent .tname{font-weight:800;}
-.team-row .score-pill{
+.team-cell.waiting-opponent .tname{font-weight:800;}
+.team-cell .score-pill{
   flex:none; min-width:26px; text-align:center; font-size:12.5px; font-weight:800; padding:3px 10px; border-radius:20px;
   background:#fff; border:1.3px solid var(--border); color:var(--text);
 }
-.team-row.winner .score-pill{background:var(--chip-blue); border-color:var(--chip-blue); color:#fff;}
-.team-row .score-in{width:52px; flex:none;}
+.team-cell.winner .score-pill{background:var(--chip-blue); border-color:var(--chip-blue); color:#fff;}
 .vs{font-size:11px; color:var(--muted2); text-align:center; padding:1px 0;}
 .match-actions{display:flex; gap:8px; margin-top:10px;}
 .match-actions .btn{flex:1;}
@@ -2971,8 +2975,7 @@ function renderPubMatchCard(chave, g){
       ${badge}
     </div>
     ${metaRow}
-    ${rowA}
-    ${rowB}
+    ${teamsPairHtml(rowA, rowB)}
     ${scoreArea}
   </div>`;
 }
@@ -5530,8 +5533,7 @@ function renderMatchCard(chave, g){
       ${badge}
     </div>
     ${metaRow}
-    ${rowA}
-    ${rowB}
+    ${teamsPairHtml(rowA, rowB)}
     ${scoreArea}
   </div>`;
 }
@@ -5541,12 +5543,25 @@ function renderMatchCard(chave, g){
 // formado porque o OUTRO lado ainda depende de outro resultado — ela fica
 // "parada" esperando adversário. Deixa o nome em negrito nesse caso pra
 // facilitar localizar rapidinho quem já avançou e está só esperando.
+//
+// Uma dupla vira uma CÉLULA (não mais uma linha cheia) — Ed pediu (21/08)
+// pra colocar os dois times lado a lado, um do lado do outro, em vez de
+// empilhados, pra deixar a lista de confrontos mais curta e mais fácil de
+// bater o olho (ele mesmo usou o termo "melhorar a visão do expectador").
+// teamsPairHtml() junta as duas células com o "×" no meio.
 function teamRow(t, isWinner, scoreVal, waiting){
-  const cls = 'team-row' + (!t.resolved ? ' placeholder' : '') + (isWinner ? ' winner' : '') + (waiting ? ' waiting-opponent' : '');
+  const cls = 'team-cell' + (!t.resolved ? ' placeholder' : '') + (isWinner ? ' winner' : '') + (waiting ? ' waiting-opponent' : '');
   const pill = (scoreVal !== null && scoreVal !== undefined && scoreVal !== '') ? `<span class="score-pill">${escapeHtml(String(scoreVal))}</span>` : '';
   return `<div class="${cls}">
     <div class="tname">${escapeHtml(t.label)}</div>
     ${pill}
+  </div>`;
+}
+function teamsPairHtml(cellA, cellB){
+  return `<div class="match-teams-row">
+    ${cellA}
+    <div class="vs-sep">×</div>
+    ${cellB}
   </div>`;
 }
 
