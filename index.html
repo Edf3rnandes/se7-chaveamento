@@ -499,6 +499,17 @@ input[type=number]{text-align:center;}
   width:100%; margin-top:7px; font-size:11px; font-weight:600; color:var(--text);
   border:1px solid var(--border); border-radius:7px; padding:4px 6px; background:#fff;
 }
+/* Visão Geral ao vivo (Ed, 22/08/2026) — mesma disposição em duas colunas do
+   Mapa das Quadras, mas cada caixa agora carrega o confronto real (nomes +
+   placar) em vez de só o nome da categoria. */
+.vg-box{
+  border:1.5px solid var(--border); border-radius:12px; padding:10px 12px; background:#fff;
+}
+.vg-box.live{border-color:var(--chip-orange); background:#fff8f0;}
+.vg-court{display:flex; align-items:baseline; gap:8px; flex-wrap:wrap;}
+.vg-cat{font-size:11.5px; color:var(--primary-dark); font-weight:700;}
+.vg-game{margin-top:8px; padding-top:8px; border-top:1px dashed var(--border);}
+.vg-game .andamento-btn{width:100%; margin-top:8px;}
 .sponsor-footer{margin-top:22px; padding-top:16px; border-top:1px solid var(--border); text-align:center;}
 .sponsor-footer-label{font-size:10.5px; font-weight:800; letter-spacing:.06em; text-transform:uppercase; color:var(--muted2); margin-bottom:10px;}
 .sponsor-footer-logos{display:flex; flex-wrap:wrap; align-items:center; justify-content:center; gap:16px;}
@@ -1378,6 +1389,10 @@ function toggleAndamento(chaveId, gnum){
   chave.andamento = Object.assign({}, chave.andamento);
   if(chave.andamento[gnum]) delete chave.andamento[gnum]; else chave.andamento[gnum] = true;
   updateChave(chave);
+  // route() dá feedback imediato (sem esperar o onSnapshot do Firestore ir e
+  // voltar) — importa mais agora que a Visão Geral (22/08/2026) usa "em
+  // andamento" pra decidir qual jogo mostrar primeiro numa quadra.
+  route();
 }
 // Clears the manual "em andamento" flag once a jogo gets a resultado — a
 // finished game shouldn't keep showing as "em andamento".
@@ -2138,7 +2153,14 @@ function getDiaConfig(ev, data){
   // categoria aparece em qual quadra no mapa (Ed, 21/08/2026: "a ordem dos
   // jogos e a disposição das categorias está errada", pediu uma opção pra
   // alterar diretamente em vez de depender só do cálculo automático).
-  return { quadras: c.quadras || 0, horaInicio: c.horaInicio || '08:00', horaLimite: c.horaLimite || '', quadraCategoria: c.quadraCategoria || {} };
+  // quadraJogoAtual: {quadraIdx -> {chaveId, gnum}} — qual confronto
+  // ESPECÍFICO a Visão Geral (22/08/2026) está mostrando "ao vivo" em cada
+  // quadra agora. Precisa ficar salvo (não só recalculado a cada render):
+  // se recalculasse do zero toda vez a partir da fila de jogos prontos da
+  // categoria, terminar um jogo numa quadra reembaralhava a posição na fila
+  // e fazia OUTRA quadra, que nem tinha mexido em nada, pular pro jogo
+  // seguinte no meio de uma partida em andamento.
+  return { quadras: c.quadras || 0, horaInicio: c.horaInicio || '08:00', horaLimite: c.horaLimite || '', quadraCategoria: c.quadraCategoria || {}, quadraJogoAtual: c.quadraJogoAtual || {} };
 }
 function setDiaConfig(eventoId, data, patch){
   const ev = getEvento(eventoId);
@@ -2247,6 +2269,7 @@ function route(){
   if(parts[0] === 'nova-categoria') return renderSetup(null, { eventoId:parts[1], data:decodeURIComponent(parts[2]) });
   if(parts[0] === 'importar-lista') return renderImportLista(parts[1], decodeURIComponent(parts[2]));
   if(parts[0] === 'cronograma') return renderCronograma(parts[1], decodeURIComponent(parts[2]));
+  if(parts[0] === 'visao-geral') return renderVisaoGeralView(parts[1], decodeURIComponent(parts[2]));
   if(parts[0] === 'chave') return renderChaveView(parts[1]);
   if(parts[0] === 'editar') return renderSetup(parts[1]);
 
@@ -2254,6 +2277,7 @@ function route(){
   if(hash === '/' || hash === '/pub') return renderPubEventos();
   if(parts[0] === 'pub' && parts[1] === 'evento' && parts.length === 3) return renderPubEventoView(parts[2]);
   if(parts[0] === 'pub' && parts[1] === 'evento' && parts.length >= 4) return renderPubDiaView(parts[2], decodeURIComponent(parts[3]));
+  if(parts[0] === 'pub' && parts[1] === 'visao-geral') return renderPubVisaoGeralView(parts[2], decodeURIComponent(parts[3]));
   if(parts[0] === 'pub' && parts[1] === 'chave') return renderPubChaveView(parts[2]);
 
   return renderPubEventos();
@@ -2735,7 +2759,8 @@ function renderEventoView(eventoId, selectedDia){
   app.innerHTML = `
     ${header(escapeHtml(ev.nome) + (publicado ? '' : ' <span class="rascunho-badge">RASCUNHO</span>'), ev.edicao ? escapeHtml(ev.edicao) : null, '/organizador', publishRow, ev.logoUrl)}
     <div class="wrap">
-      <button class="btn secondary" style="margin-bottom:14px; width:100%;" onclick="location.hash='/cronograma/${eventoId}/'+encodeURIComponent('${dia}')">🗓️ Cronograma de quadras</button>
+      <button class="btn secondary" style="margin-bottom:8px; width:100%;" onclick="location.hash='/cronograma/${eventoId}/'+encodeURIComponent('${dia}')">🗓️ Cronograma de quadras</button>
+      <button class="btn accent" style="margin-bottom:14px; width:100%;" onclick="location.hash='/visao-geral/${eventoId}/'+encodeURIComponent('${dia}')">📋 Visão geral ao vivo</button>
       ${dayTabs}
       ${body}
       ${renderQuadraMapHtml(ev, dia, false)}
@@ -2930,6 +2955,16 @@ function renderPubEventoView(eventoId){
       ${sponsorFooterHtml(ev)}
     </div>`;
 }
+// Alterna entre "Categorias" e "Visão geral" nas telas públicas de um dia —
+// pedido do Ed (22/08/2026): a Visão Geral ao vivo vira uma ABA do dia pro
+// público, não uma tela separada sem volta.
+function pubDayGeralTabsHtml(eventoId, dia, active){
+  const encDia = encodeURIComponent(dia);
+  return `<div class="tabs">
+    <div class="tab ${active==='cat'?'active':''}" onclick="location.hash='/pub/evento/${eventoId}/'+'${encDia}'">🏆 Categorias</div>
+    <div class="tab ${active==='geral'?'active':''}" onclick="location.hash='/pub/visao-geral/${eventoId}/'+'${encDia}'">📋 Visão geral</div>
+  </div>`;
+}
 function renderPubDiaView(eventoId, data){
   const ev = getEvento(eventoId);
   if(!isEventoPublicado(ev)){ location.hash='/'; return; }
@@ -2946,7 +2981,21 @@ function renderPubDiaView(eventoId, data){
   }).join('') : `<div class="empty"><div class="big">🏐</div><div style="font-weight:700;">Nenhuma categoria nesse dia</div></div>`;
   app.innerHTML = `
     ${header(formatDiaLabelFull(data), escapeHtml(ev.nome), '/pub/evento/'+eventoId)}
-    <div class="wrap">${body}${renderQuadraMapHtml(ev, data, true)}${sponsorFooterHtml(ev)}</div>`;
+    <div class="wrap">
+      ${pubDayGeralTabsHtml(eventoId, data, 'cat')}
+      ${body}${renderQuadraMapHtml(ev, data, true)}${sponsorFooterHtml(ev)}
+    </div>`;
+}
+function renderPubVisaoGeralView(eventoId, dia){
+  const ev = getEvento(eventoId);
+  if(!isEventoPublicado(ev)){ location.hash='/'; return; }
+  app.innerHTML = `
+    ${header(formatDiaLabelFull(dia), escapeHtml(ev.nome), '/pub/evento/'+eventoId+'/'+encodeURIComponent(dia))}
+    <div class="wrap">
+      ${pubDayGeralTabsHtml(eventoId, dia, 'geral')}
+      ${renderVisaoGeralGrid(ev, dia, true)}
+      ${sponsorFooterHtml(ev)}
+    </div>`;
 }
 function renderPubMatchCard(chave, g){
   const info = matchInfo(chave, g);
@@ -4067,6 +4116,212 @@ function renderQuadraMapHtml(ev, dia, readOnly){
     </div>
   </div>`;
 }
+
+// ---------- Visão Geral (ao vivo) ----------
+// Ed (22/08/2026): "queria uma visão geral dos jogos que estão acontecendo e
+// ao colocar como finalizado, automaticamente me dar o novo confronto para
+// aquela categoria, respeitando a quadra". Diferença chave pro Mapa das
+// Quadras acima: o mapa só mostra a CATEGORIA prevista pra cada quadra,
+// calculada por ESTIMATIVA de horário (gerarGradeDia agenda os jogos de uma
+// categoria do primeiro ao último, sem saber se algum já terminou de
+// verdade). Esta tela troca a estimativa pelo ESTADO REAL — mostra o
+// confronto (nomes das duplas) que realmente está pronto pra jogar em cada
+// quadra agora, e assim que o placar é lançado ali mesmo, a quadra
+// automaticamente passa a mostrar o PRÓXIMO confronto pronto daquela mesma
+// categoria (a categoria continua "dona" da quadra do mesmo jeito que já
+// funcionava no mapa — fixação manual 📌 ou estimativa de horário decidem
+// qual categoria está em qual quadra; só o jogo específico exibido dentro
+// dela vira tempo real).
+function computeVisaoGeralBoxes(ev, dia){
+  const dc = getDiaConfig(ev, dia);
+  if(!dc.quadras) return [];
+  const items = categoriasOfDia(ev.id, dia);
+  if(!items.length) return [];
+  const evForCalc = Object.assign({}, ev, { duracaoPadrao: ev.duracaoPadrao||30, duracaoDecisiva: ev.duracaoDecisiva||40 });
+  const { jogos } = gerarGradeDia(evForCalc, items, dc.quadras, dc.horaInicio);
+
+  const inicioMin = hhmmToMin(dc.horaInicio) || 8*60;
+  const hojeStr = new Date().toISOString().slice(0,10);
+  let refMin;
+  if(dia === hojeStr){
+    const agora = new Date();
+    refMin = agora.getHours()*60 + agora.getMinutes();
+  } else {
+    refMin = inicioMin;
+  }
+
+  const nomes = (ev.quadrasNomes || []).map(normQuadraNome);
+  const overrides = dc.quadraCategoria || {};
+
+  // Qual categoria está "da vez" em cada quadra — mesma regra do Mapa das
+  // Quadras (fixação manual 📌 primeiro, senão a estimativa de horário).
+  const courtOf = [];
+  for(let i=0; i<dc.quadras; i++){
+    const overrideChaveId = overrides[i] || '';
+    if(overrideChaveId){
+      const oc = getChave(overrideChaveId);
+      if(oc){ courtOf.push({ idx:i, chaveId: oc.id, chaveNome: oc.nome, manual:true }); continue; }
+    }
+    const emAndamento = jogos.find(j => j.quadraIdx === i && refMin >= j.inicio && refMin < j.fim);
+    if(emAndamento){ courtOf.push({ idx:i, chaveId: emAndamento.chaveId, chaveNome: emAndamento.categoria, manual:false }); continue; }
+    const proximos = jogos.filter(j => j.quadraIdx === i && j.inicio >= refMin).sort((a,b) => a.inicio - b.inicio);
+    if(proximos.length){ courtOf.push({ idx:i, chaveId: proximos[0].chaveId, chaveNome: proximos[0].categoria, manual:false }); continue; }
+    courtOf.push({ idx:i, chaveId:null, chaveNome:null, manual:false });
+  }
+
+  // Fila REAL (não estimada) de jogos prontos por categoria: times já
+  // definidos, sem resultado ainda — prioriza quem já foi marcado "em
+  // andamento" pelo organizador, depois segue em ordem de número.
+  const filaPorCategoria = {};
+  function filaDe(chaveId){
+    if(filaPorCategoria[chaveId]) return filaPorCategoria[chaveId];
+    const chave = getChave(chaveId);
+    if(!chave){ filaPorCategoria[chaveId] = []; return []; }
+    const prontos = effectiveGames(chave)
+      .filter(g => !(chave.resultados[g.num] && chave.resultados[g.num].vencedorSlot))
+      .map(g => ({ g, info: matchInfo(chave, g) }))
+      .filter(x => x.info.ready)
+      .sort((x,y) => {
+        const ax = (chave.andamento && chave.andamento[x.g.num]) ? 0 : 1;
+        const ay = (chave.andamento && chave.andamento[y.g.num]) ? 0 : 1;
+        if(ax !== ay) return ax - ay;
+        return x.g.num - y.g.num;
+      });
+    filaPorCategoria[chaveId] = prontos;
+    return prontos;
+  }
+
+  // Qual confronto ESPECÍFICO cada quadra mostra fica FIXO (persistido em
+  // dc.quadraJogoAtual) enquanto continuar pronto e sem resultado — só troca
+  // quando o jogo preso naquela quadra termina (ou deixa de ser válido, ex.
+  // a quadra mudou de categoria). Sem essa fixação, terminar um jogo numa
+  // quadra reembaralhava a fila inteira da categoria e fazia outra quadra —
+  // que ninguém mexeu — pular pro jogo seguinte no meio de uma partida.
+  const atual = Object.assign({}, dc.quadraJogoAtual || {});
+  const claimedNums = {}; // chaveId -> Set de gnums já reservados por alguma quadra
+  let changed = false;
+
+  // Passada 1: toda quadra cujo jogo preso AINDA é válido (pronto, sem
+  // resultado, mesma categoria) reserva esse número JÁ — antes de qualquer
+  // quadra sem jogo preso sair escolhendo. Sem isso, processar as quadras em
+  // ordem deixava uma quadra que precisava de um jogo NOVO roubar o número
+  // que outra quadra (ainda não processada) já tinha preso e estava jogando
+  // de verdade.
+  courtOf.forEach(co => {
+    if(!co.chaveId) return;
+    const pinned = atual[co.idx];
+    if(!pinned || pinned.chaveId !== co.chaveId) return;
+    const fila = filaDe(co.chaveId);
+    const stillReady = fila.some(x => x.g.num === pinned.gnum);
+    if(!stillReady) return;
+    claimedNums[co.chaveId] = claimedNums[co.chaveId] || new Set();
+    if(claimedNums[co.chaveId].has(pinned.gnum)) return; // dois override apontando pra mesma categoria com o mesmo jogo preso — improvável, mas não deixa duplicar
+    claimedNums[co.chaveId].add(pinned.gnum);
+  });
+
+  // Passada 2: monta as caixas de verdade — quadra com reserva válida usa
+  // ela; as demais pegam o próximo item livre da fila (índice de quadra
+  // crescente), e só ALI a atribuição persistida é atualizada.
+  const boxes = courtOf.map(co => {
+    const q = nomes[co.idx] || null;
+    const nome = q ? q.nome : ('Quadra ' + (co.idx+1));
+    const lado = q ? q.lado : 'esquerda';
+    if(!co.chaveId){
+      if(atual[co.idx]){ delete atual[co.idx]; changed = true; }
+      return { idx:co.idx, nome, lado, chaveId:null, chaveNome:null, manual:false, game:null, state:'livre' };
+    }
+    const chave = getChave(co.chaveId);
+    if(!chave) return { idx:co.idx, nome, lado, chaveId:null, chaveNome:null, manual:false, game:null, state:'livre' };
+
+    const fila = filaDe(co.chaveId);
+    const byNum = {}; fila.forEach(x => byNum[x.g.num] = x);
+    claimedNums[co.chaveId] = claimedNums[co.chaveId] || new Set();
+
+    const pinned = atual[co.idx];
+    const pinnedValid = pinned && pinned.chaveId === co.chaveId && byNum[pinned.gnum] && claimedNums[co.chaveId].has(pinned.gnum);
+    let chosen = pinnedValid ? byNum[pinned.gnum] : null;
+    if(!chosen){
+      chosen = fila.find(x => !claimedNums[co.chaveId].has(x.g.num)) || null;
+      if(chosen){ atual[co.idx] = { chaveId: co.chaveId, gnum: chosen.g.num }; claimedNums[co.chaveId].add(chosen.g.num); changed = true; }
+      else if(pinned){ delete atual[co.idx]; changed = true; }
+    }
+
+    if(!chosen){
+      const total = effectiveGames(chave).length;
+      const done = effectiveGames(chave).filter(g => chave.resultados[g.num] && chave.resultados[g.num].vencedorSlot).length;
+      const state = (total > 0 && done >= total) ? 'encerrada' : 'aguardando';
+      return { idx:co.idx, nome, lado, chaveId:co.chaveId, chaveNome:co.chaveNome, manual:co.manual, game:null, state };
+    }
+    const g = chosen.g, info = chosen.info;
+    const andamento = !!(chave.andamento && chave.andamento[g.num]);
+    return {
+      idx:co.idx, nome, lado, chaveId:co.chaveId, chaveNome:co.chaveNome, manual:co.manual,
+      game: { num:g.num, fase:g.fase, A:info.A, B:info.B, andamento },
+      state: 'live'
+    };
+  });
+
+  if(changed) setDiaConfig(ev.id, dia, { quadraJogoAtual: atual });
+  return boxes;
+}
+
+function visaoGeralBoxHtml(b, readOnly){
+  const header = `<div class="quadra-mapa-nome">🏐 ${escapeHtml(b.nome)}</div>`;
+  if(b.state === 'livre'){
+    return `<div class="vg-box"><div class="vg-court">${header}<div class="quadra-mapa-cat livre">Livre</div></div></div>`;
+  }
+  const catLine = `<div class="vg-cat">${b.manual ? '📌 ' : ''}${escapeHtml(b.chaveNome)}</div>`;
+  if(b.state !== 'live'){
+    const msg = b.state === 'encerrada' ? '✅ Categoria encerrada' : '⏳ Aguardando o próximo confronto ficar pronto';
+    return `<div class="vg-box"><div class="vg-court">${header}${catLine}</div><div class="hint" style="margin-top:6px;">${msg}</div></div>`;
+  }
+  const g = b.game;
+  const rowA = teamRow(g.A, false, null, false);
+  const rowB = teamRow(g.B, false, null, false);
+  const badge = g.andamento ? `<span class="match-badge live">● Em andamento</span>` : `<span class="match-badge ready">Próximo</span>`;
+  const actions = readOnly ? '' : `
+    <button class="andamento-btn ${g.andamento?'on':''}" onclick="toggleAndamento('${b.chaveId}',${g.num})">${g.andamento ? '⏸ Encerrar' : '▶ Iniciar jogo'}</button>
+    ${scoreEntryHtml(getChave(b.chaveId), { num:g.num, fase:g.fase })}`;
+  return `<div class="vg-box ${g.andamento?'live':''}">
+    <div class="vg-court">${header}${catLine}</div>
+    <div class="vg-game">
+      <div class="match-top"><span class="match-num">#${g.num}</span><span class="spacer"></span>${badge}</div>
+      ${teamsPairHtml(rowA, rowB)}
+      ${actions}
+    </div>
+  </div>`;
+}
+
+function renderVisaoGeralGrid(ev, dia, readOnly){
+  const boxes = computeVisaoGeralBoxes(ev, dia);
+  if(!boxes.length){
+    return `<div class="empty"><div class="big">🏐</div><div style="font-weight:700; font-size:16px; margin-bottom:4px;">Nada rolando ainda</div><div style="font-size:13.5px;">Configure as quadras e categorias desse dia pra ver o painel ao vivo aqui.</div></div>`;
+  }
+  const esquerda = boxes.filter(b => b.lado !== 'direita');
+  const direita = boxes.filter(b => b.lado === 'direita');
+  return `<div class="quadra-mapa">
+    <div class="quadra-mapa-lado">
+      <div class="quadra-mapa-lado-label">Lado esquerdo</div>
+      ${esquerda.length ? esquerda.map(b => visaoGeralBoxHtml(b, readOnly)).join('') : '<div class="hint">Nenhuma quadra desse lado</div>'}
+    </div>
+    <div class="quadra-mapa-lado">
+      <div class="quadra-mapa-lado-label">Lado direito</div>
+      ${direita.length ? direita.map(b => visaoGeralBoxHtml(b, readOnly)).join('') : '<div class="hint">Nenhuma quadra desse lado</div>'}
+    </div>
+  </div>`;
+}
+
+function renderVisaoGeralView(eventoId, dia){
+  const ev = getEvento(eventoId);
+  if(!ev){ location.hash = '/organizador'; return; }
+  app.innerHTML = `
+    ${header('📋 Visão geral ao vivo', escapeHtml(ev.nome) + ' · ' + formatDiaLabelFull(dia), '/evento/'+eventoId+'/'+encodeURIComponent(dia))}
+    <div class="wrap">
+      <div class="hint" style="margin-bottom:10px;">Mostra o confronto real pronto em cada quadra agora. Ao lançar o placar, a quadra já passa pro próximo confronto daquela categoria sozinha.</div>
+      ${renderVisaoGeralGrid(ev, dia, false)}
+    </div>`;
+}
+
 // Calcula um tamanho de página sob medida pra tabela de um dia — em vez de
 // forçar A4/Letter e deixar o autotable quebrar em várias páginas quando tem
 // muita quadra ou muito horário, a página nasce do tamanho exato da tabela
@@ -4503,7 +4758,12 @@ function salvarResultado(chaveId, gnum, novoResultado, opts){
   if(localChave){
     localChave.resultados = Object.assign({}, localChave.resultados, { [gnum]: novoResultado });
     clearAndamento(localChave, gnum); // um jogo com resultado não é mais "em andamento"
-    renderChaveView(chaveId);
+    // route() (não renderChaveView direto) porque esse mesmo placar pode
+    // estar sendo lançado de outra tela que não a da chave — a Visão Geral
+    // (22/08/2026) mostra e edita o placar de um jogo específico ali mesmo,
+    // sem navegar pra dentro da categoria; route() sempre re-renderiza
+    // qualquer tela que estiver aberta no momento, sem precisar saber qual é.
+    route();
   }
 
   return fbDb.runTransaction(tx => tx.get(ref).then(snap => {
@@ -4528,7 +4788,7 @@ function salvarResultado(chaveId, gnum, novoResultado, opts){
     tx.update(ref, update);
   })).catch(err => {
     if(err && err.message === 'CONFLICT'){
-      if(localChave){ localChave.resultados = localBackup; renderChaveView(chaveId); }
+      if(localChave){ localChave.resultados = localBackup; route(); }
       const quem = err.existing.lastEditedBy || 'outra pessoa';
       if(confirm(`Esse jogo já foi lançado por ${quem}. Sobrescrever com o novo placar?`)){
         return salvarResultado(chaveId, gnum, novoResultado, { force:true });
@@ -4577,7 +4837,7 @@ function salvarResultadoDireto(chaveId, gnum, novoResultado, localChave, localBa
     // undo the optimistic update instead of leaving a placar on screen that
     // was never actually saved anywhere, and say so plainly.
     if(err && (err.code === 'permission-denied' || err.code === 'unauthenticated')){
-      if(localChave){ localChave.resultados = localBackup; renderChaveView(chaveId); }
+      if(localChave){ localChave.resultados = localBackup; route(); }
       toast('Sem permissão pra salvar — faça login de novo');
       return;
     }
@@ -5606,7 +5866,7 @@ function scoreEntryHtml(chave, g){
 }
 function addSetRow(key, chaveId, gnum){
   setInputs[key].sets.push(['','']);
-  renderChaveView(chaveId);
+  route(); // não renderChaveView direto — ver comentário em salvarResultado (Visão Geral, 22/08/2026)
 }
 function confirmScore(chaveId, gnum){
   const chave = getChave(chaveId);
