@@ -5248,15 +5248,14 @@ function renderTreeView(chave, readOnly){
     const midX = Math.round((x1 + x2) / 2);
     return `<path d="M${x1},${y1} H${midX} V${y2} H${x2}" class="tree-line"/>`;
   }
-  // Ed pediu (21/08/2026) pra voltar como já tínhamos ajustado antes: SEM
-  // linha nenhuma entrando na repescagem (só o texto da caixa mesmo diz de
-  // onde veio cada dupla) e, agora, SEM linha nenhuma entrando na semifinal
-  // também — igual já era pro Final/3º-4º. A tentativa de traçar a linha do
-  // perdedor pros jogos "só Perd J" (feita mais cedo hoje, pra tentar deixar
-  // mais claro visualmente quem se enfrenta na repescagem) foi revertida.
+  // Ed (21/08/2026): SEM linha nenhuma entrando na repescagem (só o texto da
+  // caixa mesmo diz de onde veio cada dupla — a tentativa de traçar a linha
+  // do perdedor pros jogos "só Perd J" foi revertida), mas a linha do
+  // vencedor volta a entrar até a semifinal (só Final/3º-4º ficam sem
+  // nenhuma linha entrando, com o texto da caixa explicando a origem).
   let connectors = '';
   games.forEach(g => {
-    if(g.fase === 'Final' || g.fase === '3º/4º' || g.fase === 'S/Final') return;
+    if(g.fase === 'Final' || g.fase === '3º/4º') return;
     [g.a, g.b].forEach(ref => {
       const srcNum = refWinnerGameNum(ref);
       if(srcNum && geom[srcNum]) connectors += connectAuto(srcNum, g.num);
