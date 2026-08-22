@@ -517,6 +517,15 @@ input[type=number]{text-align:center;}
 .vg-toggle-btn.primary{
   background:var(--chip-blue); color:#fff; text-decoration:none; border-radius:8px; padding:8px 0; font-weight:800;
 }
+/* Pódio geral (Ed, 22/08/2026) — lista simples por categoria, pensada pra
+   virar imagem exportável (html2canvas) e ser mandada direto no WhatsApp. */
+.podio-list{display:flex; flex-direction:column; gap:10px;}
+.podio-card{border:1.5px solid var(--border); border-radius:12px; padding:12px 14px; background:#fff;}
+.podio-cat-nome{font-weight:800; font-size:14px; margin-bottom:6px;}
+.podio-row{display:flex; align-items:center; gap:8px; padding:4px 0;}
+.podio-medal{font-size:18px; flex:none; width:24px; text-align:center;}
+.podio-pos{font-size:11px; font-weight:800; color:var(--muted2); flex:none; width:28px;}
+.podio-names{font-size:13px; font-weight:700; color:var(--text);}
 .sponsor-footer{margin-top:22px; padding-top:16px; border-top:1px solid var(--border); text-align:center;}
 .sponsor-footer-label{font-size:10.5px; font-weight:800; letter-spacing:.06em; text-transform:uppercase; color:var(--muted2); margin-bottom:10px;}
 .sponsor-footer-logos{display:flex; flex-wrap:wrap; align-items:center; justify-content:center; gap:16px;}
@@ -1831,6 +1840,35 @@ function computeFinalRankingChain(chave){
   return rows;
 }
 
+// Pódio (1º-3º) de uma categoria — Ed (22/08/2026): "quero ao final divulgar
+// em lista o pódio de todas as categorias". Reaproveita computeFullRanking
+// (a mesma fonte usada na aba Classificação) e recorta só posStart 1-3,
+// agrupando por posLabel — necessário porque um chaveamento sem disputa de
+// 3º lugar produz DOIS nomes empatados em "3º" (as duas semifinalistas
+// perdedoras), não um só.
+function computePodio(chave){
+  const st = chaveStatus(chave);
+  const ranking = computeFullRanking(chave);
+  const byLabel = {};
+  const order = [];
+  ranking.forEach(r => {
+    if(r.posStart > 3) return;
+    if(!byLabel[r.posLabel]){
+      byLabel[r.posLabel] = { posLabel:r.posLabel, posStart:r.posStart, names:[], pending:false };
+      order.push(byLabel[r.posLabel]);
+    }
+    if(r.pending) byLabel[r.posLabel].pending = true;
+    else if(r.name) byLabel[r.posLabel].names.push(r.name);
+  });
+  order.sort((a,b) => a.posStart - b.posStart);
+  return { concluded: st.concluded, done: st.done, total: st.total, podio: order };
+}
+// Pódio de TODAS as categorias de um evento (todos os dias), na mesma ordem
+// alfabética/por dia já usada em categoriasOfEvento.
+function computeEventoPodio(eventoId){
+  return categoriasOfEvento(eventoId).map(({cat, chave}) => ({ cat, chave, podio: computePodio(chave) }));
+}
+
 // For 4/5 duplas the organizer can skip the 3º/4º dispute (goes straight to the
 // final, 3º/4º decided by group average instead). This returns the game list a
 // given chave should actually use.
@@ -2270,6 +2308,7 @@ function route(){
   if(parts[0] === 'importar-lista') return renderImportLista(parts[1], decodeURIComponent(parts[2]));
   if(parts[0] === 'cronograma') return renderCronograma(parts[1], decodeURIComponent(parts[2]));
   if(parts[0] === 'visao-geral') return renderVisaoGeralView(parts[1], decodeURIComponent(parts[2]));
+  if(parts[0] === 'podio') return renderPodioGeralView(parts[1]);
   if(parts[0] === 'chave') return renderChaveView(parts[1]);
   if(parts[0] === 'editar') return renderSetup(parts[1]);
 
@@ -2278,6 +2317,7 @@ function route(){
   if(parts[0] === 'pub' && parts[1] === 'evento' && parts.length === 3) return renderPubEventoView(parts[2]);
   if(parts[0] === 'pub' && parts[1] === 'evento' && parts.length >= 4) return renderPubDiaView(parts[2], decodeURIComponent(parts[3]));
   if(parts[0] === 'pub' && parts[1] === 'visao-geral') return renderPubVisaoGeralView(parts[2], decodeURIComponent(parts[3]));
+  if(parts[0] === 'pub' && parts[1] === 'podio') return renderPubPodioView(parts[2]);
   if(parts[0] === 'pub' && parts[1] === 'chave') return renderPubChaveView(parts[2]);
 
   return renderPubEventos();
@@ -2760,7 +2800,8 @@ function renderEventoView(eventoId, selectedDia){
     ${header(escapeHtml(ev.nome) + (publicado ? '' : ' <span class="rascunho-badge">RASCUNHO</span>'), ev.edicao ? escapeHtml(ev.edicao) : null, '/organizador', publishRow, ev.logoUrl)}
     <div class="wrap">
       <button class="btn secondary" style="margin-bottom:8px; width:100%;" onclick="location.hash='/cronograma/${eventoId}/'+encodeURIComponent('${dia}')">🗓️ Cronograma de quadras</button>
-      <button class="btn accent" style="margin-bottom:14px; width:100%;" onclick="location.hash='/visao-geral/${eventoId}/'+encodeURIComponent('${dia}')">📋 Visão geral ao vivo</button>
+      <button class="btn accent" style="margin-bottom:8px; width:100%;" onclick="location.hash='/visao-geral/${eventoId}/'+encodeURIComponent('${dia}')">📋 Visão geral ao vivo</button>
+      <button class="btn secondary" style="margin-bottom:14px; width:100%;" onclick="location.hash='/podio/${eventoId}'">🏆 Pódio geral</button>
       ${dayTabs}
       ${body}
       ${renderQuadraMapHtml(ev, dia, false)}
@@ -2944,7 +2985,8 @@ function renderPubEventoView(eventoId){
         <span class="status-badge ${status.cls}">${status.label}</span>
       </div>
       ${metaRow}
-      <button class="btn accent" style="margin:12px 0 16px;" onclick="document.getElementById('categoriasSection').scrollIntoView({behavior:'smooth'})">🏆 Ver categorias</button>
+      <button class="btn accent" style="margin:12px 0 8px;" onclick="document.getElementById('categoriasSection').scrollIntoView({behavior:'smooth'})">🏆 Ver categorias</button>
+      <button class="btn ghost" style="margin:0 0 16px;" onclick="location.hash='/pub/podio/${ev.id}'">🏆 Pódio geral</button>
       ${infoCard}
       ${orgCard}
       ${regrasCard}
@@ -4357,6 +4399,68 @@ function renderVisaoGeralView(eventoId, dia){
     <div class="wrap">
       <div class="hint" style="margin-bottom:10px;">Mostra o confronto real pronto em cada quadra agora. Ao lançar o placar, a quadra já passa pro próximo confronto daquela categoria sozinha.</div>
       ${renderVisaoGeralGrid(ev, dia, false)}
+    </div>`;
+}
+
+// ---------- Pódio geral (Ed, 22/08/2026: "divulgar em lista o pódio de
+// todas as categorias") ----------
+const MEDAL_BY_POS = { 1:'🥇', 2:'🥈', 3:'🥉' };
+function podioListHtml(eventoId){
+  const items = computeEventoPodio(eventoId);
+  if(!items.length){
+    return `<div class="empty"><div class="big">🏆</div><div style="font-weight:700; font-size:16px;">Nenhuma categoria ainda</div></div>`;
+  }
+  return items.map(({cat, chave, podio}) => {
+    const body = podio.concluded
+      ? podio.podio.map(p => `<div class="podio-row">
+          <span class="podio-medal">${MEDAL_BY_POS[p.posStart] || '🎖️'}</span>
+          <span class="podio-pos">${escapeHtml(p.posLabel)}</span>
+          <span class="podio-names">${p.names.length ? escapeHtml(p.names.join('  •  ')) : '—'}</span>
+        </div>`).join('')
+      : `<div class="hint" style="margin-top:4px;">${podio.done === 0 ? 'Ainda não começou' : ('Em andamento · ' + podio.done + '/' + podio.total + ' jogos')} — o pódio aparece aqui quando a categoria terminar.</div>`;
+    return `<div class="podio-card">
+      <div class="podio-cat-nome">${escapeHtml(chave.nome)}</div>
+      ${body}
+    </div>`;
+  }).join('');
+}
+function exportPodioImagem(eventoId){
+  const ev = getEvento(eventoId);
+  const el = document.getElementById('podioList-' + cssId(eventoId));
+  if(!el){ toast('Nada pra exportar ainda'); return; }
+  toast('Gerando imagem…');
+  ensureHtml2CanvasLoaded().then(() => {
+    return window.html2canvas(el, { backgroundColor:'#ffffff', scale:2 });
+  }).then(canvas => {
+    const a = document.createElement('a');
+    a.href = canvas.toDataURL('image/png');
+    a.download = 'podio-' + ((ev && ev.nome) || 'evento').toLowerCase().replace(/[^a-z0-9]+/g,'-') + '.png';
+    a.click();
+  }).catch(() => toast('Não consegui gerar a imagem — confira sua internet'));
+}
+function renderPodioGeralView(eventoId){
+  const ev = getEvento(eventoId);
+  if(!ev){ location.hash = '/organizador'; return; }
+  app.innerHTML = `
+    ${header('🏆 Pódio geral', escapeHtml(ev.nome), '/evento/'+eventoId)}
+    <div class="wrap">
+      <div class="hint" style="margin-bottom:10px;">Pódio (1º–3º) de cada categoria do evento, todos os dias. Categorias ainda em andamento aparecem sem pódio até terminar.</div>
+      <button class="btn accent" style="margin-bottom:14px; width:100%;" onclick="exportPodioImagem('${eventoId}')">📸 Baixar imagem pra divulgar</button>
+      <div id="podioList-${cssId(eventoId)}" class="podio-list">
+        ${podioListHtml(eventoId)}
+      </div>
+    </div>`;
+}
+function renderPubPodioView(eventoId){
+  const ev = getEvento(eventoId);
+  if(!isEventoPublicado(ev)){ location.hash='/'; return; }
+  app.innerHTML = `
+    ${header('🏆 Pódio geral', escapeHtml(ev.nome), '/pub/evento/'+eventoId)}
+    <div class="wrap">
+      <div id="podioList-${cssId(eventoId)}" class="podio-list">
+        ${podioListHtml(eventoId)}
+      </div>
+      ${sponsorFooterHtml(ev)}
     </div>`;
 }
 
