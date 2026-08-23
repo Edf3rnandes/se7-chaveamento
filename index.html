@@ -2800,10 +2800,10 @@ function renderEventoView(eventoId, selectedDia){
     ${header(escapeHtml(ev.nome) + (publicado ? '' : ' <span class="rascunho-badge">RASCUNHO</span>'), ev.edicao ? escapeHtml(ev.edicao) : null, '/organizador', publishRow, ev.logoUrl)}
     <div class="wrap">
       <button class="btn secondary" style="margin-bottom:8px; width:100%;" onclick="location.hash='/cronograma/${eventoId}/'+encodeURIComponent('${dia}')">🗓️ Cronograma de quadras</button>
+      <button class="btn accent" style="margin-bottom:8px; width:100%;" onclick="location.hash='/visao-geral/${eventoId}/'+encodeURIComponent('${dia}')">📋 Visão geral ao vivo</button>
       <button class="btn secondary" style="margin-bottom:14px; width:100%;" onclick="location.hash='/podio/${eventoId}'">🏆 Pódio geral</button>
       ${dayTabs}
       ${body}
-      <button class="btn accent" style="margin-top:10px; width:100%;" onclick="location.hash='/visao-geral/${eventoId}/'+encodeURIComponent('${dia}')">📋 Visão geral ao vivo</button>
       ${renderQuadraMapHtml(ev, dia, false)}
       <button class="btn accent" style="margin-top:6px;" onclick="location.hash='/nova-categoria/${eventoId}/'+encodeURIComponent('${dia}')">+ Nova categoria</button>
       <button class="btn ghost" style="margin-top:8px;" onclick="location.hash='/importar-lista/${eventoId}/'+encodeURIComponent('${dia}')">📥 Importar lista completa (todas as categorias)</button>
@@ -2920,6 +2920,13 @@ function renderPubEventos(){
 // comportamento de quem já está acostumado a ver tudo junto.
 let pubActiveDia = {};
 function setPubDia(eventoId, dia){ pubActiveDia[eventoId] = dia; renderPubEventoView(eventoId); }
+// Qual dia a Visão Geral pública deve abrir por padrão a partir da página do
+// evento: o dia hoje, se o evento estiver rolando; senão o primeiro dia.
+function diaPadraoVisaoGeral(dias){
+  if(!dias.length) return null;
+  const hoje = new Date().toISOString().slice(0,10);
+  return dias.includes(hoje) ? hoje : dias[0];
+}
 function renderPubEventoView(eventoId){
   const ev = getEvento(eventoId);
   if(!isEventoPublicado(ev)){ location.hash='/'; return; }
@@ -2993,7 +3000,8 @@ function renderPubEventoView(eventoId){
       <div id="categoriasSection" class="section-title">🏆 Categorias</div>
       ${pubDayTabs}
       ${catGrid}
-      <button class="btn ghost" style="margin-top:14px;" onclick="location.hash='/'">‹ Todos os eventos</button>
+      ${dias.length ? `<button class="btn accent" style="margin-top:14px; width:100%;" onclick="location.hash='/pub/visao-geral/${ev.id}/'+encodeURIComponent('${diaPadraoVisaoGeral(dias)}')">📋 Visão geral ao vivo</button>` : ''}
+      <button class="btn ghost" style="margin-top:8px;" onclick="location.hash='/'">‹ Todos os eventos</button>
       ${sponsorFooterHtml(ev)}
     </div>`;
 }
