@@ -2800,10 +2800,10 @@ function renderEventoView(eventoId, selectedDia){
     ${header(escapeHtml(ev.nome) + (publicado ? '' : ' <span class="rascunho-badge">RASCUNHO</span>'), ev.edicao ? escapeHtml(ev.edicao) : null, '/organizador', publishRow, ev.logoUrl)}
     <div class="wrap">
       <button class="btn secondary" style="margin-bottom:8px; width:100%;" onclick="location.hash='/cronograma/${eventoId}/'+encodeURIComponent('${dia}')">🗓️ Cronograma de quadras</button>
-      <button class="btn accent" style="margin-bottom:8px; width:100%;" onclick="location.hash='/visao-geral/${eventoId}/'+encodeURIComponent('${dia}')">📋 Visão geral ao vivo</button>
       <button class="btn secondary" style="margin-bottom:14px; width:100%;" onclick="location.hash='/podio/${eventoId}'">🏆 Pódio geral</button>
       ${dayTabs}
       ${body}
+      <button class="btn accent" style="margin-top:10px; width:100%;" onclick="location.hash='/visao-geral/${eventoId}/'+encodeURIComponent('${dia}')">📋 Visão geral ao vivo</button>
       ${renderQuadraMapHtml(ev, dia, false)}
       <button class="btn accent" style="margin-top:6px;" onclick="location.hash='/nova-categoria/${eventoId}/'+encodeURIComponent('${dia}')">+ Nova categoria</button>
       <button class="btn ghost" style="margin-top:8px;" onclick="location.hash='/importar-lista/${eventoId}/'+encodeURIComponent('${dia}')">📥 Importar lista completa (todas as categorias)</button>
@@ -3028,13 +3028,16 @@ function renderPubDiaView(eventoId, data){
       ${body}${renderQuadraMapHtml(ev, data, true)}${sponsorFooterHtml(ev)}
     </div>`;
 }
-function renderPubVisaoGeralView(eventoId, dia){
+function renderPubVisaoGeralView(eventoId, diaSolicitado){
   const ev = getEvento(eventoId);
   if(!isEventoPublicado(ev)){ location.hash='/'; return; }
+  const dias = diasOfEvento(ev);
+  const dia = (diaSolicitado && dias.includes(diaSolicitado)) ? diaSolicitado : (dias[0] || diaSolicitado);
   app.innerHTML = `
     ${header(formatDiaLabelFull(dia), escapeHtml(ev.nome), '/pub/evento/'+eventoId+'/'+encodeURIComponent(dia))}
     <div class="wrap">
       ${pubDayGeralTabsHtml(eventoId, dia, 'geral')}
+      ${visaoGeralDayTabsHtml('/pub/visao-geral', eventoId, dias, dia)}
       ${renderVisaoGeralGrid(ev, dia, true)}
       ${sponsorFooterHtml(ev)}
     </div>`;
@@ -4391,13 +4394,27 @@ function renderVisaoGeralGrid(ev, dia, readOnly){
   </div>`;
 }
 
-function renderVisaoGeralView(eventoId, dia){
+// Abas dos dias DENTRO da própria Visão Geral — Ed (22/08/2026): "o botão
+// dos dias pra ver a lista naquela aba normal". Antes só dava pra chegar
+// numa quadra específica de UM dia (o dia com que se navegou pra cá) — pra
+// trocar de dia era preciso voltar pra página do evento. Mesmo padrão visual
+// das abas de dia já usadas em renderEventoView/renderPubDiaView.
+function visaoGeralDayTabsHtml(routePrefix, eventoId, dias, diaAtivo){
+  if(dias.length <= 1) return '';
+  return `<div class="tabs" style="overflow-x:auto;">
+    ${dias.map(d => `<div class="tab ${d===diaAtivo?'active':''}" onclick="location.hash='${routePrefix}/${eventoId}/'+encodeURIComponent('${d}')">${formatDiaLabelFull(d)}</div>`).join('')}
+  </div>`;
+}
+function renderVisaoGeralView(eventoId, diaSolicitado){
   const ev = getEvento(eventoId);
   if(!ev){ location.hash = '/organizador'; return; }
+  const dias = diasOfEvento(ev);
+  const dia = (diaSolicitado && dias.includes(diaSolicitado)) ? diaSolicitado : (dias[0] || diaSolicitado);
   app.innerHTML = `
     ${header('📋 Visão geral ao vivo', escapeHtml(ev.nome) + ' · ' + formatDiaLabelFull(dia), '/evento/'+eventoId+'/'+encodeURIComponent(dia))}
     <div class="wrap">
       <div class="hint" style="margin-bottom:10px;">Mostra o confronto real pronto em cada quadra agora. Ao lançar o placar, a quadra já passa pro próximo confronto daquela categoria sozinha.</div>
+      ${visaoGeralDayTabsHtml('/visao-geral', eventoId, dias, dia)}
       ${renderVisaoGeralGrid(ev, dia, false)}
     </div>`;
 }
