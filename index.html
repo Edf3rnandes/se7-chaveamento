@@ -76,6 +76,10 @@ button{font-family:inherit;}
    visível do que a tela realmente permitia. */
 .wrap-chave{max-width:640px; margin:0 auto; padding:14px;}
 @media (min-width:900px){ .wrap-chave{max-width:1200px; padding:20px 28px;} }
+/* Telas de TV/monitor bem grandes (painel ao vivo na quadra, Ed 22/08/2026)
+   — mais um degrau além do desktop normal, pra não deixar 1200px preso numa
+   tela de 1900px+ com faixas vazias enormes dos dois lados. */
+@media (min-width:1500px){ .wrap-chave{max-width:1600px;} }
 .card{
   background:var(--card); border:1px solid var(--border); border-radius:var(--radius);
   padding:14px; margin-bottom:12px; box-shadow:0 1px 3px rgba(20,30,30,.04);
@@ -502,20 +506,42 @@ input[type=number]{text-align:center;}
 /* Visão Geral ao vivo (Ed, 22/08/2026) — mesma disposição em duas colunas do
    Mapa das Quadras, mas cada caixa agora carrega o confronto real (nomes +
    placar) em vez de só o nome da categoria. */
+/* Grade da Visão Geral (Ed, 22/08/2026: "tv/computador ficam iguais ao
+   celular, quero mais espaçado e distribuído, com os próximos jogos, talvez
+   reduzindo os quadradinhos") — cada lado vira um grid que se auto-preenche
+   com quantas colunas couberem (uma no celular, várias numa tela de
+   TV/desktop), em vez do antigo layout de coluna única sempre — e as caixas
+   ficam um pouco mais compactas pra caber mais informação (inclusive os
+   próximos confrontos) sem virar uma parede de texto. .wrap-chave (ver
+   abaixo) já cuida de dar mais largura total à página em telas grandes;
+   isso aqui cuida de distribuir essa largura extra em colunas de verdade.
+*/
+.vg-wrap{display:flex; gap:16px; margin-top:10px; flex-wrap:wrap;}
+.vg-col{flex:1 1 320px; min-width:0;}
+.vg-grid{display:grid; grid-template-columns:1fr; gap:10px; margin-top:6px;}
+@media (min-width:560px){ .vg-grid{grid-template-columns:repeat(auto-fill, minmax(230px, 1fr));} }
 .vg-box{
-  border:1.5px solid var(--border); border-radius:12px; padding:10px 12px; background:#fff;
+  border:1.5px solid var(--border); border-radius:11px; padding:9px 10px; background:#fff;
 }
 .vg-box.live{border-color:var(--chip-orange); background:#fff8f0;}
-.vg-court{display:flex; align-items:baseline; gap:8px; flex-wrap:wrap;}
-.vg-cat{font-size:11.5px; color:var(--primary-dark); font-weight:700;}
-.vg-game{margin-top:8px; padding-top:8px; border-top:1px dashed var(--border);}
-.vg-game .andamento-btn{width:100%; margin-top:8px;}
+.vg-court{display:flex; align-items:baseline; gap:6px; flex-wrap:wrap;}
+.vg-cat{font-size:11px; color:var(--primary-dark); font-weight:700;}
+.vg-game{margin-top:6px; padding-top:6px; border-top:1px dashed var(--border);}
+.vg-game .andamento-btn{width:100%; margin-top:6px;}
+.vg-box .match-teams-row{margin-bottom:0;}
+.vg-box .team-cell{padding:5px 5px;}
+.vg-box .team-cell .tname{font-size:12px;}
+.vg-upcoming{margin-top:6px; padding-top:6px; border-top:1px dashed var(--border);}
+.vg-upcoming-label{font-size:9.5px; font-weight:800; letter-spacing:.05em; text-transform:uppercase; color:var(--muted2); margin-bottom:3px;}
+.vg-upcoming-row{font-size:11px; color:var(--muted2); line-height:1.5; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
+.vg-upcoming-num{font-weight:800; color:var(--text);}
+.vg-upcoming-x{color:var(--muted2);}
 .vg-toggle-btn{
-  text-align:center; font-size:12.5px; font-weight:700; color:var(--chip-blue); text-decoration:underline;
-  cursor:pointer; margin-top:8px; padding:4px 0;
+  text-align:center; font-size:12px; font-weight:700; color:var(--chip-blue); text-decoration:underline;
+  cursor:pointer; margin-top:6px; padding:3px 0;
 }
 .vg-toggle-btn.primary{
-  background:var(--chip-blue); color:#fff; text-decoration:none; border-radius:8px; padding:8px 0; font-weight:800;
+  background:var(--chip-blue); color:#fff; text-decoration:none; border-radius:8px; padding:7px 0; font-weight:800;
 }
 /* Pódio geral (Ed, 22/08/2026) — lista simples por categoria, pensada pra
    virar imagem exportável (html2canvas) e ser mandada direto no WhatsApp. */
@@ -2798,7 +2824,7 @@ function renderEventoView(eventoId, selectedDia){
 
   app.innerHTML = `
     ${header(escapeHtml(ev.nome) + (publicado ? '' : ' <span class="rascunho-badge">RASCUNHO</span>'), ev.edicao ? escapeHtml(ev.edicao) : null, '/organizador', publishRow, ev.logoUrl)}
-    <div class="wrap">
+    <div class="wrap-chave">
       <button class="btn secondary" style="margin-bottom:8px; width:100%;" onclick="location.hash='/cronograma/${eventoId}/'+encodeURIComponent('${dia}')">🗓️ Cronograma de quadras</button>
       <button class="btn accent" style="margin-bottom:8px; width:100%;" onclick="location.hash='/visao-geral/${eventoId}/'+encodeURIComponent('${dia}')">📋 Visão geral ao vivo</button>
       <button class="btn secondary" style="margin-bottom:14px; width:100%;" onclick="location.hash='/podio/${eventoId}'">🏆 Pódio geral</button>
@@ -2986,7 +3012,7 @@ function renderPubEventoView(eventoId){
   app.innerHTML = `
     ${header(escapeHtml(ev.nome) + (ev.edicao ? ' <span class="header-edicao">— '+escapeHtml(ev.edicao)+'</span>' : ''), null, '/', '', ev.logoUrl)}
     ${banner}
-    <div class="wrap">
+    <div class="wrap-chave">
       <div class="evt-title-row">
         <h1>${escapeHtml(ev.nome)}</h1>
         <span class="status-badge ${status.cls}">${status.label}</span>
@@ -3043,7 +3069,7 @@ function renderPubVisaoGeralView(eventoId, diaSolicitado){
   const dia = (diaSolicitado && dias.includes(diaSolicitado)) ? diaSolicitado : (dias[0] || diaSolicitado);
   app.innerHTML = `
     ${header(formatDiaLabelFull(dia), escapeHtml(ev.nome), '/pub/evento/'+eventoId+'/'+encodeURIComponent(dia))}
-    <div class="wrap">
+    <div class="wrap-chave">
       ${pubDayGeralTabsHtml(eventoId, dia, 'geral')}
       ${visaoGeralDayTabsHtml('/pub/visao-geral', eventoId, dias, dia)}
       ${renderVisaoGeralGrid(ev, dia, true)}
@@ -4307,25 +4333,42 @@ function computeVisaoGeralBoxes(ev, dia){
     chavesToSave.forEach(c => updateChave(c));
   }
 
+  // "Próximos jogos" (Ed, 22/08/2026, pedido pra tela de TV) — os itens da
+  // fila daquela categoria que ainda NÃO estão em nenhuma quadra agora (o
+  // resto da fila além do que já foi reservado nas duas passadas acima).
+  // É por categoria, não por quadra: se duas quadras jogam a mesma
+  // categoria, as duas mostram a mesma prévia do que vem a seguir.
+  const upcomingPorCategoria = {};
+  function upcomingDe(chaveId){
+    if(upcomingPorCategoria[chaveId]) return upcomingPorCategoria[chaveId];
+    const fila = filaDe(chaveId);
+    const claimed = claimedNums[chaveId] || new Set();
+    const rest = fila.filter(x => !claimed.has(x.g.num)).slice(0, 2)
+      .map(x => ({ num:x.g.num, A:x.info.A, B:x.info.B }));
+    upcomingPorCategoria[chaveId] = rest;
+    return rest;
+  }
+
   return courtOf.map(co => {
     const q = nomes[co.idx] || null;
     const nome = q ? q.nome : ('Quadra ' + (co.idx+1));
     const lado = q ? q.lado : 'esquerda';
-    if(!co.chaveId) return { idx:co.idx, nome, lado, chaveId:null, chaveNome:null, manual:false, game:null, state:'livre' };
+    if(!co.chaveId) return { idx:co.idx, nome, lado, chaveId:null, chaveNome:null, manual:false, game:null, upcoming:[], state:'livre' };
     const chave = getChave(co.chaveId);
-    if(!chave) return { idx:co.idx, nome, lado, chaveId:null, chaveNome:null, manual:false, game:null, state:'livre' };
+    if(!chave) return { idx:co.idx, nome, lado, chaveId:null, chaveNome:null, manual:false, game:null, upcoming:[], state:'livre' };
     const chosen = chosenFor[co.idx];
     if(!chosen){
       const total = effectiveGames(chave).length;
       const done = effectiveGames(chave).filter(g => chave.resultados[g.num] && chave.resultados[g.num].vencedorSlot).length;
       const state = (total > 0 && done >= total) ? 'encerrada' : 'aguardando';
-      return { idx:co.idx, nome, lado, chaveId:co.chaveId, chaveNome:co.chaveNome, manual:co.manual, game:null, state };
+      return { idx:co.idx, nome, lado, chaveId:co.chaveId, chaveNome:co.chaveNome, manual:co.manual, game:null, upcoming:[], state };
     }
     const g = chosen.g, info = chosen.info;
     const andamento = !!(chave.andamento && chave.andamento[g.num]);
     return {
       idx:co.idx, nome, lado, chaveId:co.chaveId, chaveNome:co.chaveNome, manual:co.manual,
       game: { num:g.num, fase:g.fase, A:info.A, B:info.B, andamento },
+      upcoming: upcomingDe(co.chaveId),
       state: 'live'
     };
   });
@@ -4367,6 +4410,16 @@ function visaoGeralBoxHtml(b, readOnly){
          <div class="vg-toggle-btn" onclick="toggleVgExpand('${b.chaveId}',${g.num})">▲ Recolher</div>`
       : `<div class="vg-toggle-btn primary" onclick="toggleVgExpand('${b.chaveId}',${g.num})">✓ Lançar placar</div>`;
   }
+  // "A seguir" (Ed, 22/08/2026, pedido pra tela de TV) — prévia compacta (só
+  // nomes, sem placar nem botão) dos próximos confrontos da MESMA categoria
+  // que ainda não estão em nenhuma quadra, pra dar noção do que vem depois
+  // sem precisar de outra caixa cheia por jogo.
+  const upcomingHtml = (b.upcoming && b.upcoming.length)
+    ? `<div class="vg-upcoming">
+        <div class="vg-upcoming-label">A seguir</div>
+        ${b.upcoming.map(u => `<div class="vg-upcoming-row"><span class="vg-upcoming-num">#${u.num}</span> ${escapeHtml(u.A.label)} <span class="vg-upcoming-x">×</span> ${escapeHtml(u.B.label)}</div>`).join('')}
+      </div>`
+    : '';
   return `<div class="vg-box ${g.andamento?'live':''}">
     <div class="vg-court">${header}${catLine}</div>
     <div class="vg-game">
@@ -4378,6 +4431,7 @@ function visaoGeralBoxHtml(b, readOnly){
         ${badge}
       </div>
       ${teamsPairHtml(rowA, rowB)}
+      ${upcomingHtml}
       ${actions}
     </div>
   </div>`;
@@ -4390,14 +4444,14 @@ function renderVisaoGeralGrid(ev, dia, readOnly){
   }
   const esquerda = boxes.filter(b => b.lado !== 'direita');
   const direita = boxes.filter(b => b.lado === 'direita');
-  return `<div class="quadra-mapa">
-    <div class="quadra-mapa-lado">
+  return `<div class="vg-wrap">
+    <div class="vg-col">
       <div class="quadra-mapa-lado-label">Lado esquerdo</div>
-      ${esquerda.length ? esquerda.map(b => visaoGeralBoxHtml(b, readOnly)).join('') : '<div class="hint">Nenhuma quadra desse lado</div>'}
+      <div class="vg-grid">${esquerda.length ? esquerda.map(b => visaoGeralBoxHtml(b, readOnly)).join('') : '<div class="hint">Nenhuma quadra desse lado</div>'}</div>
     </div>
-    <div class="quadra-mapa-lado">
+    <div class="vg-col">
       <div class="quadra-mapa-lado-label">Lado direito</div>
-      ${direita.length ? direita.map(b => visaoGeralBoxHtml(b, readOnly)).join('') : '<div class="hint">Nenhuma quadra desse lado</div>'}
+      <div class="vg-grid">${direita.length ? direita.map(b => visaoGeralBoxHtml(b, readOnly)).join('') : '<div class="hint">Nenhuma quadra desse lado</div>'}</div>
     </div>
   </div>`;
 }
@@ -4420,7 +4474,7 @@ function renderVisaoGeralView(eventoId, diaSolicitado){
   const dia = (diaSolicitado && dias.includes(diaSolicitado)) ? diaSolicitado : (dias[0] || diaSolicitado);
   app.innerHTML = `
     ${header('📋 Visão geral ao vivo', escapeHtml(ev.nome) + ' · ' + formatDiaLabelFull(dia), '/evento/'+eventoId+'/'+encodeURIComponent(dia))}
-    <div class="wrap">
+    <div class="wrap-chave">
       <div class="hint" style="margin-bottom:10px;">Mostra o confronto real pronto em cada quadra agora. Ao lançar o placar, a quadra já passa pro próximo confronto daquela categoria sozinha.</div>
       ${visaoGeralDayTabsHtml('/visao-geral', eventoId, dias, dia)}
       ${renderVisaoGeralGrid(ev, dia, false)}
