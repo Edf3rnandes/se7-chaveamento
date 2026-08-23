@@ -2993,6 +2993,7 @@ function renderPubEventoView(eventoId){
       </div>
       ${metaRow}
       <button class="btn accent" style="margin:12px 0 8px;" onclick="document.getElementById('categoriasSection').scrollIntoView({behavior:'smooth'})">🏆 Ver categorias</button>
+      ${dias.length ? `<button class="btn accent" style="margin:0 0 8px; width:100%;" onclick="location.hash='/pub/visao-geral/${ev.id}/'+encodeURIComponent('${diaPadraoVisaoGeral(dias)}')">📋 Visão geral ao vivo</button>` : ''}
       <button class="btn ghost" style="margin:0 0 16px;" onclick="location.hash='/pub/podio/${ev.id}'">🏆 Pódio geral</button>
       ${infoCard}
       ${orgCard}
@@ -3000,8 +3001,7 @@ function renderPubEventoView(eventoId){
       <div id="categoriasSection" class="section-title">🏆 Categorias</div>
       ${pubDayTabs}
       ${catGrid}
-      ${dias.length ? `<button class="btn accent" style="margin-top:14px; width:100%;" onclick="location.hash='/pub/visao-geral/${ev.id}/'+encodeURIComponent('${diaPadraoVisaoGeral(dias)}')">📋 Visão geral ao vivo</button>` : ''}
-      <button class="btn ghost" style="margin-top:8px;" onclick="location.hash='/'">‹ Todos os eventos</button>
+      <button class="btn ghost" style="margin-top:14px;" onclick="location.hash='/'">‹ Todos os eventos</button>
       ${sponsorFooterHtml(ev)}
     </div>`;
 }
