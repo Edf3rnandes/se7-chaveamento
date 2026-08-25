@@ -531,11 +531,6 @@ input[type=number]{text-align:center;}
 .vg-box .match-teams-row{margin-bottom:0;}
 .vg-box .team-cell{padding:5px 5px;}
 .vg-box .team-cell .tname{font-size:12px;}
-.vg-upcoming{margin-top:6px; padding-top:6px; border-top:1px dashed var(--border);}
-.vg-upcoming-label{font-size:9.5px; font-weight:800; letter-spacing:.05em; text-transform:uppercase; color:var(--muted2); margin-bottom:3px;}
-.vg-upcoming-row{font-size:11px; color:var(--muted2); line-height:1.5; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
-.vg-upcoming-num{font-weight:800; color:var(--text);}
-.vg-upcoming-x{color:var(--muted2);}
 .vg-toggle-btn{
   text-align:center; font-size:12px; font-weight:700; color:var(--chip-blue); text-decoration:underline;
   cursor:pointer; margin-top:6px; padding:3px 0;
@@ -552,6 +547,14 @@ input[type=number]{text-align:center;}
 .podio-medal{font-size:18px; flex:none; width:24px; text-align:center;}
 .podio-pos{font-size:11px; font-weight:800; color:var(--muted2); flex:none; width:28px;}
 .podio-names{font-size:13px; font-weight:700; color:var(--text);}
+.ra-list{display:flex; flex-direction:column; gap:8px;}
+.ra-row{border:1.5px solid var(--border); border-radius:10px; padding:10px 12px; background:#fff; cursor:pointer;}
+.ra-top{display:flex; align-items:center; gap:10px;}
+.ra-pos{font-weight:800; font-size:14px; color:var(--muted2); width:30px; flex:none; text-align:center;}
+.ra-name{flex:1; min-width:0; font-weight:700; font-size:14px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+.ra-pontos{font-weight:800; font-size:14px; color:var(--primary-dark); flex:none;}
+.ra-detail{margin-top:8px; padding-top:8px; border-top:1px dashed var(--border);}
+.ra-detail-row{display:flex; justify-content:space-between; gap:8px; font-size:12px; color:var(--muted2); padding:2px 0;}
 .sponsor-footer{margin-top:22px; padding-top:16px; border-top:1px solid var(--border); text-align:center;}
 .sponsor-footer-label{font-size:10.5px; font-weight:800; letter-spacing:.06em; text-transform:uppercase; color:var(--muted2); margin-bottom:10px;}
 .sponsor-footer-logos{display:flex; flex-wrap:wrap; align-items:center; justify-content:center; gap:16px;}
@@ -1895,6 +1898,75 @@ function computeEventoPodio(eventoId){
   return categoriasOfEvento(eventoId).map(({cat, chave}) => ({ cat, chave, podio: computePodio(chave) }));
 }
 
+// ---------- ranking de pontuação por atleta (Ed, 24/08/2026: "cada
+// colocação tem uma pontuação... preciso gerar um relatorio pos evento dos
+// atletas nas categorias, com esse sistema de pontuação", acumulado entre
+// vários eventos — tipo ranking de circuito/temporada) ----------
+// Tabela oficial do Ed. As chaves são o posStart de cada FAIXA de colocação
+// — a mesma faixa que computeFullRanking já usa pra agrupar posições
+// empatadas (5º/6º sempre saem juntos, 7º/8º juntos, 9º-12º juntos, 13º-16º
+// juntos, 17º-24º juntos, 25º em diante), por isso não existe entrada pra
+// 6º/8º/10º etc — "lembrando que sempre haverá dois 5" é exatamente essa
+// faixa 5º-6º valendo o mesmo tanto de pontos pras duas duplas.
+const PONTOS_POR_POSSTART = { 1:200, 2:180, 3:160, 4:140, 5:120, 7:100, 9:80, 13:60, 17:40, 25:30 };
+const PONTOS_POSSTART_KEYS = Object.keys(PONTOS_POR_POSSTART).map(Number).sort((a,b) => a-b);
+function pontosParaPosStart(posStart){
+  let pts = 0;
+  for(const k of PONTOS_POSSTART_KEYS){ if(posStart >= k) pts = PONTOS_POR_POSSTART[k]; else break; }
+  return pts;
+}
+// A pontuação é sempre por ATLETA individual, nunca pela dupla/quarteto como
+// unidade — o mesmo atleta pode repetir com parceiros diferentes em
+// categorias ou eventos diferentes, e ainda assim precisa somar pro mesmo
+// total. Times antigos gravados como string "Fulano / Ciclano" (formato
+// legado, ver teamLabel) também são cobertos aqui.
+function individualNamesOfTeam(chave, time){
+  if(!time) return [];
+  if(typeof time === 'string') return time.split('/').map(s => s.trim()).filter(Boolean);
+  if(chave.modalidade === 'quarteto') return (time.atletas || []).map(a => (a||'').trim()).filter(Boolean);
+  return [time.atleta1, time.atleta2].map(a => (a||'').trim()).filter(Boolean);
+}
+// Acha o índice do time em chave.times a partir do label já resolvido (usado
+// só quando a linha do ranking não carrega teamKey — categorias pequenas
+// com grupo único, ver computeFullRanking).
+function findTeamIndexByLabel(chave, label){
+  for(let i=0; i<chave.times.length; i++){ if(teamLabel(chave, i) === label) return i; }
+  return -1;
+}
+// Ranking geral de pontuação por atleta, somando todas as categorias de um
+// conjunto de eventos (por padrão, TODOS os eventos cadastrados — é assim
+// que vira um ranking de circuito/temporada, não só de uma etapa). Cada
+// atleta é identificado pelo nome normalizado (normPersonName — ignora
+// acento/maiúscula/espaço duplicado) pra não duplicar por causa de digitação
+// diferente entre categorias.
+function computeRankingAtletas(eventoIds){
+  const byAthlete = {};
+  const eventos = eventoIds ? eventoIds.map(getEvento).filter(Boolean) : loadEventos();
+  eventos.forEach(ev => {
+    categoriasOfEvento(ev.id).forEach(({chave}) => {
+      const ranking = computeFullRanking(chave);
+      ranking.forEach(r => {
+        if(r.pending || !r.name) return;
+        const pontos = pontosParaPosStart(r.posStart);
+        if(!pontos) return;
+        const idx = r.teamKey ? (parseInt(String(r.teamKey).replace('R',''), 10) - 1) : findTeamIndexByLabel(chave, r.name);
+        const time = idx >= 0 ? chave.times[idx] : null;
+        const nomes = individualNamesOfTeam(chave, time);
+        const nomesFinal = nomes.length ? nomes : [r.name];
+        nomesFinal.forEach(nomeAtleta => {
+          const key = normPersonName(nomeAtleta);
+          if(!key) return;
+          if(!byAthlete[key]) byAthlete[key] = { nome: nomeAtleta, pontos: 0, categorias: 0, detalhes: [] };
+          byAthlete[key].pontos += pontos;
+          byAthlete[key].categorias += 1;
+          byAthlete[key].detalhes.push({ eventoNome: ev.nome, categoriaNome: chave.nome, posLabel: r.posLabel, pontos });
+        });
+      });
+    });
+  });
+  return Object.values(byAthlete).sort((a, b) => b.pontos - a.pontos || a.nome.localeCompare(b.nome));
+}
+
 // For 4/5 duplas the organizer can skip the 3º/4º dispute (goes straight to the
 // final, 3º/4º decided by group average instead). This returns the game list a
 // given chave should actually use.
@@ -2335,6 +2407,7 @@ function route(){
   if(parts[0] === 'cronograma') return renderCronograma(parts[1], decodeURIComponent(parts[2]));
   if(parts[0] === 'visao-geral') return renderVisaoGeralView(parts[1], decodeURIComponent(parts[2]));
   if(parts[0] === 'podio') return renderPodioGeralView(parts[1]);
+  if(hash === '/ranking-atletas') return renderRankingAtletasView();
   if(parts[0] === 'chave') return renderChaveView(parts[1]);
   if(parts[0] === 'editar') return renderSetup(parts[1]);
 
@@ -2449,6 +2522,7 @@ function renderEventosHome(){
       ${bgCard}
       ${body}
       <button class="btn accent" style="margin-top:6px;" onclick="location.hash='/novo-evento'">+ Novo evento</button>
+      <button class="btn secondary" style="margin-top:8px;" onclick="location.hash='/ranking-atletas'">🏅 Ranking de atletas</button>
       <button class="btn ghost" style="margin-top:8px;" onclick="location.hash='/'">👁 Abrir modo público (somente leitura)</button>
     </div>`;
 }
@@ -4333,42 +4407,25 @@ function computeVisaoGeralBoxes(ev, dia){
     chavesToSave.forEach(c => updateChave(c));
   }
 
-  // "Próximos jogos" (Ed, 22/08/2026, pedido pra tela de TV) — os itens da
-  // fila daquela categoria que ainda NÃO estão em nenhuma quadra agora (o
-  // resto da fila além do que já foi reservado nas duas passadas acima).
-  // É por categoria, não por quadra: se duas quadras jogam a mesma
-  // categoria, as duas mostram a mesma prévia do que vem a seguir.
-  const upcomingPorCategoria = {};
-  function upcomingDe(chaveId){
-    if(upcomingPorCategoria[chaveId]) return upcomingPorCategoria[chaveId];
-    const fila = filaDe(chaveId);
-    const claimed = claimedNums[chaveId] || new Set();
-    const rest = fila.filter(x => !claimed.has(x.g.num)).slice(0, 2)
-      .map(x => ({ num:x.g.num, A:x.info.A, B:x.info.B }));
-    upcomingPorCategoria[chaveId] = rest;
-    return rest;
-  }
-
   return courtOf.map(co => {
     const q = nomes[co.idx] || null;
     const nome = q ? q.nome : ('Quadra ' + (co.idx+1));
     const lado = q ? q.lado : 'esquerda';
-    if(!co.chaveId) return { idx:co.idx, nome, lado, chaveId:null, chaveNome:null, manual:false, game:null, upcoming:[], state:'livre' };
+    if(!co.chaveId) return { idx:co.idx, nome, lado, chaveId:null, chaveNome:null, manual:false, game:null, state:'livre' };
     const chave = getChave(co.chaveId);
-    if(!chave) return { idx:co.idx, nome, lado, chaveId:null, chaveNome:null, manual:false, game:null, upcoming:[], state:'livre' };
+    if(!chave) return { idx:co.idx, nome, lado, chaveId:null, chaveNome:null, manual:false, game:null, state:'livre' };
     const chosen = chosenFor[co.idx];
     if(!chosen){
       const total = effectiveGames(chave).length;
       const done = effectiveGames(chave).filter(g => chave.resultados[g.num] && chave.resultados[g.num].vencedorSlot).length;
       const state = (total > 0 && done >= total) ? 'encerrada' : 'aguardando';
-      return { idx:co.idx, nome, lado, chaveId:co.chaveId, chaveNome:co.chaveNome, manual:co.manual, game:null, upcoming:[], state };
+      return { idx:co.idx, nome, lado, chaveId:co.chaveId, chaveNome:co.chaveNome, manual:co.manual, game:null, state };
     }
     const g = chosen.g, info = chosen.info;
     const andamento = !!(chave.andamento && chave.andamento[g.num]);
     return {
       idx:co.idx, nome, lado, chaveId:co.chaveId, chaveNome:co.chaveNome, manual:co.manual,
       game: { num:g.num, fase:g.fase, A:info.A, B:info.B, andamento },
-      upcoming: upcomingDe(co.chaveId),
       state: 'live'
     };
   });
@@ -4410,16 +4467,6 @@ function visaoGeralBoxHtml(b, readOnly){
          <div class="vg-toggle-btn" onclick="toggleVgExpand('${b.chaveId}',${g.num})">▲ Recolher</div>`
       : `<div class="vg-toggle-btn primary" onclick="toggleVgExpand('${b.chaveId}',${g.num})">✓ Lançar placar</div>`;
   }
-  // "A seguir" (Ed, 22/08/2026, pedido pra tela de TV) — prévia compacta (só
-  // nomes, sem placar nem botão) dos próximos confrontos da MESMA categoria
-  // que ainda não estão em nenhuma quadra, pra dar noção do que vem depois
-  // sem precisar de outra caixa cheia por jogo.
-  const upcomingHtml = (b.upcoming && b.upcoming.length)
-    ? `<div class="vg-upcoming">
-        <div class="vg-upcoming-label">A seguir</div>
-        ${b.upcoming.map(u => `<div class="vg-upcoming-row"><span class="vg-upcoming-num">#${u.num}</span> ${escapeHtml(u.A.label)} <span class="vg-upcoming-x">×</span> ${escapeHtml(u.B.label)}</div>`).join('')}
-      </div>`
-    : '';
   return `<div class="vg-box ${g.andamento?'live':''}">
     <div class="vg-court">${header}${catLine}</div>
     <div class="vg-game">
@@ -4431,7 +4478,6 @@ function visaoGeralBoxHtml(b, readOnly){
         ${badge}
       </div>
       ${teamsPairHtml(rowA, rowB)}
-      ${upcomingHtml}
       ${actions}
     </div>
   </div>`;
@@ -4540,6 +4586,60 @@ function renderPubPodioView(eventoId){
         ${podioListHtml(eventoId)}
       </div>
       ${sponsorFooterHtml(ev)}
+    </div>`;
+}
+
+// ---------- Ranking de atletas por pontuação (Ed, 24/08/2026) ----------
+// Só organizador (é um relatório interno, com nome individual de cada
+// atleta, acumulado entre TODOS os eventos já cadastrados). Cada linha
+// expande pra mostrar de onde vieram os pontos (evento · categoria ·
+// colocação), pedido implícito de um "relatório" — não só um total seco.
+let raExpanded = {};
+function toggleRaExpand(key){ raExpanded[key] = !raExpanded[key]; route(); }
+function rankingAtletasListHtml(){
+  const lista = computeRankingAtletas();
+  if(!lista.length){
+    return `<div class="empty"><div class="big">🏅</div><div style="font-weight:700; font-size:16px; margin-bottom:4px;">Nenhum ponto ainda</div><div style="font-size:13.5px;">Os pontos aparecem aqui conforme as categorias vão sendo concluídas (colocação final decidida).</div></div>`;
+  }
+  return lista.map((a, i) => {
+    const key = normPersonName(a.nome);
+    const expanded = !!raExpanded[key];
+    const detail = expanded ? `<div class="ra-detail">
+      ${a.detalhes.map(d => `<div class="ra-detail-row"><span>${escapeHtml(d.eventoNome)} · ${escapeHtml(d.categoriaNome)} · ${escapeHtml(d.posLabel)}</span><span>+${d.pontos}</span></div>`).join('')}
+    </div>` : '';
+    return `<div class="ra-row" onclick="toggleRaExpand('${key.replace(/'/g,"\\'")}')">
+      <div class="ra-top">
+        <span class="ra-pos">${i+1}º</span>
+        <span class="ra-name">${escapeHtml(a.nome)}</span>
+        <span class="ra-pontos">${a.pontos} pts</span>
+      </div>
+      ${detail}
+    </div>`;
+  }).join('');
+}
+function exportRankingAtletasXlsx(){
+  const lista = computeRankingAtletas();
+  if(!lista.length){ toast('Nada pra exportar ainda'); return; }
+  toast('Gerando planilha…');
+  ensureXlsxLoaded().then(() => {
+    const resumo = lista.map((a, i) => ({ 'Posição': i+1, 'Atleta': a.nome, 'Pontos totais': a.pontos, 'Categorias pontuadas': a.categorias }));
+    const detalhes = [];
+    lista.forEach(a => a.detalhes.forEach(d => detalhes.push({ 'Atleta': a.nome, 'Evento': d.eventoNome, 'Categoria': d.categoriaNome, 'Colocação': d.posLabel, 'Pontos': d.pontos })));
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(resumo), 'Ranking');
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(detalhes), 'Detalhes');
+    XLSX.writeFile(wb, 'ranking-atletas.xlsx');
+  }).catch(() => toast('Não consegui gerar a planilha — confira sua internet'));
+}
+function renderRankingAtletasView(){
+  app.innerHTML = `
+    ${header('🏅 Ranking de atletas', 'Pontuação acumulada em todos os eventos', '/organizador')}
+    <div class="wrap-chave">
+      <div class="hint" style="margin-bottom:10px;">Soma os pontos de cada atleta pela colocação final em cada categoria que jogou, em qualquer evento e com qualquer parceiro. Só conta categoria já concluída (colocação decidida).</div>
+      <button class="btn accent" style="margin-bottom:14px; width:100%;" onclick="exportRankingAtletasXlsx()">📥 Baixar planilha (Excel)</button>
+      <div class="ra-list">
+        ${rankingAtletasListHtml()}
+      </div>
     </div>`;
 }
 
