@@ -547,14 +547,17 @@ input[type=number]{text-align:center;}
 .podio-medal{font-size:18px; flex:none; width:24px; text-align:center;}
 .podio-pos{font-size:11px; font-weight:800; color:var(--muted2); flex:none; width:28px;}
 .podio-names{font-size:13px; font-weight:700; color:var(--text);}
-.ra-list{display:flex; flex-direction:column; gap:8px;}
-.ra-row{border:1.5px solid var(--border); border-radius:10px; padding:10px 12px; background:#fff; cursor:pointer;}
-.ra-top{display:flex; align-items:center; gap:10px;}
-.ra-pos{font-weight:800; font-size:14px; color:var(--muted2); width:30px; flex:none; text-align:center;}
-.ra-name{flex:1; min-width:0; font-weight:700; font-size:14px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
-.ra-pontos{font-weight:800; font-size:14px; color:var(--primary-dark); flex:none;}
-.ra-detail{margin-top:8px; padding-top:8px; border-top:1px dashed var(--border);}
-.ra-detail-row{display:flex; justify-content:space-between; gap:8px; font-size:12px; color:var(--muted2); padding:2px 0;}
+.ra-cat-list{display:flex; flex-direction:column; gap:16px;}
+.ra-cat-card{border:1.5px solid var(--border); border-radius:12px; padding:12px 14px; background:#fafcfc;}
+.ra-cat-nome{font-weight:800; font-size:14px; margin-bottom:8px; color:var(--primary-dark);}
+.ra-instancia{margin-bottom:12px;}
+.ra-instancia:last-child{margin-bottom:0;}
+.ra-instancia-evento{font-size:11px; font-weight:800; letter-spacing:.03em; text-transform:uppercase; color:var(--muted2); margin-bottom:6px;}
+.ra-list{display:flex; flex-direction:column; gap:6px;}
+.ra-row-static{display:flex; align-items:center; gap:10px; border:1.5px solid var(--border); border-radius:10px; padding:8px 12px; background:#fff;}
+.ra-pos{font-weight:800; font-size:13px; color:var(--muted2); width:44px; flex:none;}
+.ra-name{flex:1; min-width:0; font-weight:700; font-size:13.5px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+.ra-pontos{font-weight:800; font-size:13.5px; color:var(--primary-dark); flex:none;}
 .sponsor-footer{margin-top:22px; padding-top:16px; border-top:1px solid var(--border); text-align:center;}
 .sponsor-footer-label{font-size:10.5px; font-weight:800; letter-spacing:.06em; text-transform:uppercase; color:var(--muted2); margin-bottom:10px;}
 .sponsor-footer-logos{display:flex; flex-wrap:wrap; align-items:center; justify-content:center; gap:16px;}
@@ -1915,56 +1918,58 @@ function pontosParaPosStart(posStart){
   for(const k of PONTOS_POSSTART_KEYS){ if(posStart >= k) pts = PONTOS_POR_POSSTART[k]; else break; }
   return pts;
 }
-// A pontuação é sempre por ATLETA individual, nunca pela dupla/quarteto como
-// unidade — o mesmo atleta pode repetir com parceiros diferentes em
-// categorias ou eventos diferentes, e ainda assim precisa somar pro mesmo
-// total. Times antigos gravados como string "Fulano / Ciclano" (formato
-// legado, ver teamLabel) também são cobertos aqui.
-function individualNamesOfTeam(chave, time){
-  if(!time) return [];
-  if(typeof time === 'string') return time.split('/').map(s => s.trim()).filter(Boolean);
-  if(chave.modalidade === 'quarteto') return (time.atletas || []).map(a => (a||'').trim()).filter(Boolean);
-  return [time.atleta1, time.atleta2].map(a => (a||'').trim()).filter(Boolean);
-}
-// Acha o índice do time em chave.times a partir do label já resolvido (usado
-// só quando a linha do ranking não carrega teamKey — categorias pequenas
-// com grupo único, ver computeFullRanking).
+// Reaproveita teamMatchKey/timeDisplayName (já usados na importação de
+// planilha) só pra achar o índice do time em chave.times a partir do label
+// já resolvido pelo ranking (necessário quando a linha não carrega teamKey
+// — categorias pequenas com grupo único, ver computeFullRanking).
 function findTeamIndexByLabel(chave, label){
   for(let i=0; i<chave.times.length; i++){ if(teamLabel(chave, i) === label) return i; }
   return -1;
 }
-// Ranking geral de pontuação por atleta, somando todas as categorias de um
-// conjunto de eventos (por padrão, TODOS os eventos cadastrados — é assim
-// que vira um ranking de circuito/temporada, não só de uma etapa). Cada
-// atleta é identificado pelo nome normalizado (normPersonName — ignora
-// acento/maiúscula/espaço duplicado) pra não duplicar por causa de digitação
-// diferente entre categorias.
-function computeRankingAtletas(eventoIds){
-  const byAthlete = {};
+// Classificação final de UMA categoria (chave), com o valor em pontos de
+// cada colocação — igual ao que computePodio já faz (agrupa por posLabel
+// pra juntar posições empatadas, tipo as duas 5º/6º), só que aqui SEM
+// cortar em 3º lugar: desce até onde a categoria já tiver decidido.
+function computeClassificacaoComPontos(chave){
+  const st = chaveStatus(chave);
+  const ranking = computeFullRanking(chave);
+  const byLabel = {};
+  const linhas = [];
+  ranking.forEach(r => {
+    if(!byLabel[r.posLabel]){
+      byLabel[r.posLabel] = { posLabel:r.posLabel, posStart:r.posStart, pontos: pontosParaPosStart(r.posStart), names:[], pending:false };
+      linhas.push(byLabel[r.posLabel]);
+    }
+    if(r.pending){ byLabel[r.posLabel].pending = true; return; }
+    if(!r.name) return;
+    const idx = r.teamKey ? (parseInt(String(r.teamKey).replace('R',''), 10) - 1) : findTeamIndexByLabel(chave, r.name);
+    const time = idx >= 0 ? chave.times[idx] : null;
+    const label = time ? (timeDisplayName(chave.modalidade, time) || r.name) : r.name;
+    byLabel[r.posLabel].names.push(label);
+  });
+  linhas.sort((a, b) => a.posStart - b.posStart);
+  return { concluded: st.concluded, done: st.done, total: st.total, linhas };
+}
+// Ed (24/08/2026, 3ª rodada de ajuste): "não quero que some nada. quero o
+// ranking das categorias isoladas. e a lista pra exportar delas tbm" — nada
+// de somar pontos entre eventos nem entre duplas: cada categoria (pelo
+// nome) vira uma seção, e DENTRO dela cada evento em que essa categoria
+// rolou aparece como sua própria classificação isolada — sem misturar
+// número de pontos de uma edição com o de outra, mesmo repetindo o nome.
+function computeRankingCategoriasIsoladas(eventoIds){
   const eventos = eventoIds ? eventoIds.map(getEvento).filter(Boolean) : loadEventos();
+  const byCategoria = {};
   eventos.forEach(ev => {
     categoriasOfEvento(ev.id).forEach(({chave}) => {
-      const ranking = computeFullRanking(chave);
-      ranking.forEach(r => {
-        if(r.pending || !r.name) return;
-        const pontos = pontosParaPosStart(r.posStart);
-        if(!pontos) return;
-        const idx = r.teamKey ? (parseInt(String(r.teamKey).replace('R',''), 10) - 1) : findTeamIndexByLabel(chave, r.name);
-        const time = idx >= 0 ? chave.times[idx] : null;
-        const nomes = individualNamesOfTeam(chave, time);
-        const nomesFinal = nomes.length ? nomes : [r.name];
-        nomesFinal.forEach(nomeAtleta => {
-          const key = normPersonName(nomeAtleta);
-          if(!key) return;
-          if(!byAthlete[key]) byAthlete[key] = { nome: nomeAtleta, pontos: 0, categorias: 0, detalhes: [] };
-          byAthlete[key].pontos += pontos;
-          byAthlete[key].categorias += 1;
-          byAthlete[key].detalhes.push({ eventoNome: ev.nome, categoriaNome: chave.nome, posLabel: r.posLabel, pontos });
-        });
-      });
+      const catNome = chave.nome;
+      if(!byCategoria[catNome]) byCategoria[catNome] = [];
+      byCategoria[catNome].push({ eventoNome: ev.nome, classificacao: computeClassificacaoComPontos(chave) });
     });
   });
-  return Object.values(byAthlete).sort((a, b) => b.pontos - a.pontos || a.nome.localeCompare(b.nome));
+  return Object.keys(byCategoria).sort((a, b) => a.localeCompare(b, 'pt-BR')).map(nome => ({
+    categoriaNome: nome,
+    instancias: byCategoria[nome]
+  }));
 }
 
 // For 4/5 duplas the organizer can skip the 3º/4º dispute (goes straight to the
@@ -4589,56 +4594,71 @@ function renderPubPodioView(eventoId){
     </div>`;
 }
 
-// ---------- Ranking de atletas por pontuação (Ed, 24/08/2026) ----------
-// Só organizador (é um relatório interno, com nome individual de cada
-// atleta, acumulado entre TODOS os eventos já cadastrados). Cada linha
-// expande pra mostrar de onde vieram os pontos (evento · categoria ·
-// colocação), pedido implícito de um "relatório" — não só um total seco.
-let raExpanded = {};
-function toggleRaExpand(key){ raExpanded[key] = !raExpanded[key]; route(); }
-function rankingAtletasListHtml(){
-  const lista = computeRankingAtletas();
-  if(!lista.length){
-    return `<div class="empty"><div class="big">🏅</div><div style="font-weight:700; font-size:16px; margin-bottom:4px;">Nenhum ponto ainda</div><div style="font-size:13.5px;">Os pontos aparecem aqui conforme as categorias vão sendo concluídas (colocação final decidida).</div></div>`;
+// ---------- Ranking de categorias isoladas, com pontuação (Ed, 24/08/2026)
+// ---------- Só organizador (relatório interno, cobre TODOS os eventos já
+// cadastrados). Passou por três ajustes até chegar aqui: 1) "separado por
+// categoria" — cada categoria tem sua própria seção; 2) "por duplas, não
+// atleta total" — quem aparece é a dupla, não a pessoa isolada; 3) "não
+// quero que some nada. quero o ranking das categorias isoladas" — nada de
+// somar pontos entre eventos: cada vez que a categoria rolou (em cada
+// evento) mostra a classificação daquela edição, isolada das outras.
+function classificacaoInstanciaHtml(inst){
+  const c = inst.classificacao;
+  if(!c.linhas.length){
+    return `<div class="hint" style="margin-top:2px;">Categoria sem times cadastrados.</div>`;
   }
-  return lista.map((a, i) => {
-    const key = normPersonName(a.nome);
-    const expanded = !!raExpanded[key];
-    const detail = expanded ? `<div class="ra-detail">
-      ${a.detalhes.map(d => `<div class="ra-detail-row"><span>${escapeHtml(d.eventoNome)} · ${escapeHtml(d.categoriaNome)} · ${escapeHtml(d.posLabel)}</span><span>+${d.pontos}</span></div>`).join('')}
-    </div>` : '';
-    return `<div class="ra-row" onclick="toggleRaExpand('${key.replace(/'/g,"\\'")}')">
-      <div class="ra-top">
-        <span class="ra-pos">${i+1}º</span>
-        <span class="ra-name">${escapeHtml(a.nome)}</span>
-        <span class="ra-pontos">${a.pontos} pts</span>
-      </div>
-      ${detail}
-    </div>`;
-  }).join('');
+  const algumaDecidida = c.linhas.some(l => l.names.length);
+  if(!algumaDecidida){
+    return `<div class="hint" style="margin-top:2px;">${c.done === 0 ? 'Ainda não começou' : ('Em andamento · ' + c.done + '/' + c.total + ' jogos')} — a classificação aparece aqui conforme as colocações forem decididas.</div>`;
+  }
+  const rows = c.linhas.filter(l => l.names.length).map(l => `<div class="ra-row-static">
+    <span class="ra-pos">${escapeHtml(l.posLabel)}</span>
+    <span class="ra-name">${escapeHtml(l.names.join('  •  '))}</span>
+    <span class="ra-pontos">${l.pontos} pts</span>
+  </div>`).join('');
+  const aindaFaltam = !c.concluded ? `<div class="hint" style="margin-top:4px;">Em andamento · ${c.done}/${c.total} jogos — o restante da classificação aparece conforme for sendo decidido.</div>` : '';
+  return `<div class="ra-list">${rows}</div>${aindaFaltam}`;
+}
+function rankingCategoriasIsoladasHtml(){
+  const grupos = computeRankingCategoriasIsoladas();
+  if(!grupos.length){
+    return `<div class="empty"><div class="big">🏅</div><div style="font-weight:700; font-size:16px; margin-bottom:4px;">Nenhuma categoria ainda</div><div style="font-size:13.5px;">A classificação de cada categoria aparece aqui conforme os eventos forem cadastrados e as colocações decididas.</div></div>`;
+  }
+  return grupos.map(g => `<div class="ra-cat-card">
+    <div class="ra-cat-nome">${escapeHtml(g.categoriaNome)}</div>
+    ${g.instancias.map(inst => `<div class="ra-instancia">
+      <div class="ra-instancia-evento">${escapeHtml(inst.eventoNome)}</div>
+      ${classificacaoInstanciaHtml(inst)}
+    </div>`).join('')}
+  </div>`).join('');
 }
 function exportRankingAtletasXlsx(){
-  const lista = computeRankingAtletas();
-  if(!lista.length){ toast('Nada pra exportar ainda'); return; }
+  const grupos = computeRankingCategoriasIsoladas();
+  if(!grupos.length){ toast('Nada pra exportar ainda'); return; }
   toast('Gerando planilha…');
   ensureXlsxLoaded().then(() => {
-    const resumo = lista.map((a, i) => ({ 'Posição': i+1, 'Atleta': a.nome, 'Pontos totais': a.pontos, 'Categorias pontuadas': a.categorias }));
-    const detalhes = [];
-    lista.forEach(a => a.detalhes.forEach(d => detalhes.push({ 'Atleta': a.nome, 'Evento': d.eventoNome, 'Categoria': d.categoriaNome, 'Colocação': d.posLabel, 'Pontos': d.pontos })));
+    const linhas = [];
+    grupos.forEach(g => {
+      g.instancias.forEach(inst => {
+        inst.classificacao.linhas.forEach(l => {
+          if(!l.names.length) return;
+          linhas.push({ 'Categoria': g.categoriaNome, 'Evento': inst.eventoNome, 'Colocação': l.posLabel, 'Pontos': l.pontos, 'Dupla(s)': l.names.join(' • ') });
+        });
+      });
+    });
     const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(resumo), 'Ranking');
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(detalhes), 'Detalhes');
-    XLSX.writeFile(wb, 'ranking-atletas.xlsx');
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(linhas), 'Ranking');
+    XLSX.writeFile(wb, 'ranking-categorias.xlsx');
   }).catch(() => toast('Não consegui gerar a planilha — confira sua internet'));
 }
 function renderRankingAtletasView(){
   app.innerHTML = `
-    ${header('🏅 Ranking de atletas', 'Pontuação acumulada em todos os eventos', '/organizador')}
+    ${header('🏅 Ranking por categoria', 'Classificação de cada categoria, isolada', '/organizador')}
     <div class="wrap-chave">
-      <div class="hint" style="margin-bottom:10px;">Soma os pontos de cada atleta pela colocação final em cada categoria que jogou, em qualquer evento e com qualquer parceiro. Só conta categoria já concluída (colocação decidida).</div>
+      <div class="hint" style="margin-bottom:10px;">Uma seção pra cada categoria e, dentro dela, a classificação de cada vez que essa categoria rolou — sem somar pontos entre edições nem entre duplas diferentes.</div>
       <button class="btn accent" style="margin-bottom:14px; width:100%;" onclick="exportRankingAtletasXlsx()">📥 Baixar planilha (Excel)</button>
-      <div class="ra-list">
-        ${rankingAtletasListHtml()}
+      <div class="ra-cat-list">
+        ${rankingCategoriasIsoladasHtml()}
       </div>
     </div>`;
 }
