@@ -68,6 +68,14 @@ button{font-family:inherit;}
 .app-header h1{font-size:17px; margin:0; font-weight:700; flex:1; line-height:1.25;}
 .app-header .sub{font-size:12px; opacity:.85; margin-top:2px;}
 .wrap{max-width:640px; margin:0 auto; padding:14px;}
+/* Mesma ideia do .wrap-chave abaixo, só que mais moderada -- .wrap também
+   hospeda formulários de coluna única (editar evento, nova categoria), que
+   ficam esquisitos esticados até 1200/1600px. Ainda assim, 640px fixo sem
+   nenhum degrau deixava toda tela de desktop "presa" numa coluna estreita
+   no meio, sobrando muito vazio dos dois lados -- reportado pelo Ed
+   (17/09/2026) em várias telas, não só nas de chave. */
+@media (min-width:900px){ .wrap{max-width:820px; padding:20px 28px;} }
+@media (min-width:1500px){ .wrap{max-width:960px;} }
 /* Telas de categoria (Atletas/Confrontos/Árvore, cronograma): no celular é
    igual a .wrap, mas em notebook/desktop ganha bem mais largura — o Ed
    reportou que essas telas ficavam "presas" na largura de mobile mesmo numa
@@ -429,7 +437,36 @@ input[type=number]{text-align:center;}
 
 /* foto do evento */
 .evento-photo{width:100%; height:130px; object-fit:cover; border-radius:12px; margin-bottom:10px; display:block; background:#eef2f2;}
-.evento-hero{width:100%; height:auto; max-height:320px; object-fit:contain; display:block; background:#eef2f2;}
+.evento-hero{width:100%; height:auto; max-height:360px; object-fit:contain; display:block; background:#eef2f2;}
+/* Quando o evento não tem foto de capa, a página pública ficava sem hero
+   nenhum -- mesmo os cards da listagem de eventos já caem num placeholder
+   com gradiente da marca (.banner-ph). Reaproveita a mesma ideia aqui pra
+   nunca ficar "sem nada" no topo. */
+.evento-hero-ph{
+  width:100%; height:220px; display:flex; align-items:center; justify-content:center;
+  font-size:56px; background:linear-gradient(135deg,var(--primary),var(--primary-dark)); color:rgba(255,255,255,.9);
+}
+@media (min-width:900px){ .evento-hero-ph{height:280px;} }
+.evento-hero-wrap{position:relative;}
+/* Logo do evento também dentro do hero (Ed, 17/09/2026), além do
+   cabeçalho -- badge branco arredondado no canto pra não sumir em cima de
+   foto ou do gradiente, do mesmo jeito que o status já faz nos cards. */
+.evento-hero-logo{
+  position:absolute; left:14px; bottom:14px; width:56px; height:56px; object-fit:contain;
+  background:#fff; border-radius:12px; padding:6px; box-shadow:0 2px 8px rgba(0,0,0,.18);
+}
+@media (min-width:900px){ .evento-hero-logo{width:76px; height:76px; left:24px; bottom:24px;} }
+.evt-stats-row{display:flex; gap:8px; flex-wrap:wrap; margin-top:12px;}
+.stat-chip{
+  display:flex; align-items:center; gap:6px; background:var(--card); border:1px solid var(--border);
+  border-radius:var(--radius-pill,999px); padding:7px 13px; font-size:12.5px; font-weight:700; color:var(--text);
+  box-shadow:0 1px 3px rgba(20,30,30,.04);
+}
+.stat-chip b{font-weight:800; color:var(--primary-dark);}
+.cat-day-heading{
+  font-size:13px; font-weight:800; color:#fff; background:linear-gradient(120deg,var(--primary),var(--primary-dark));
+  padding:7px 13px; border-radius:10px; margin:18px 0 10px; display:inline-flex; align-items:center; gap:6px;
+}
 .chave-item .thumb{width:52px; height:52px; border-radius:10px; object-fit:cover; flex:none; background:#eef2f2;}
 .foto-upload-preview{width:100%; height:110px; object-fit:cover; border-radius:10px; margin-top:8px; display:block;}
 .foto-upload-btn{margin-top:8px;}
@@ -604,7 +641,8 @@ textarea{
 
 /* página pública do evento (estilo arevo) */
 .evt-title-row{display:flex; align-items:center; gap:8px; margin-top:14px; flex-wrap:wrap;}
-.evt-title-row h1{font-size:21px; margin:0; font-weight:800; color:var(--text); line-height:1.25;}
+.evt-title-row h1{font-size:23px; margin:0; font-weight:800; color:var(--text); line-height:1.25;}
+@media (min-width:900px){ .evt-title-row h1{font-size:28px;} }
 .evt-meta-row{display:flex; gap:14px; flex-wrap:wrap; font-size:13px; color:var(--muted2); font-weight:600; margin-top:6px;}
 .card-title{font-weight:800; font-size:14px; color:var(--primary-dark); margin-bottom:10px; display:flex; align-items:center; gap:6px;}
 .info-row{display:flex; align-items:flex-start; gap:10px; margin-bottom:10px;}
@@ -3035,12 +3073,21 @@ function diaPadraoVisaoGeral(dias){
 function renderPubEventoView(eventoId){
   const ev = getEvento(eventoId);
   if(!isEventoPublicado(ev)){ location.hash='/'; return; }
-  const banner = ev.fotoUrl ? `<img class="evento-hero" src="${ev.fotoUrl}">` : '';
+  const banner = `<div class="evento-hero-wrap">
+    ${ev.fotoUrl ? `<img class="evento-hero" src="${ev.fotoUrl}">` : `<div class="evento-hero-ph">🏐</div>`}
+    ${ev.logoUrl ? `<img class="evento-hero-logo" src="${ev.logoUrl}" alt="Logo do evento">` : ''}
+  </div>`;
   const status = eventoStatusInfo(ev);
   const periodo = formatPeriodoLong(ev.dataInicio, ev.dataFim);
   const dias = diasOfEvento(ev);
   const selectedDia = pubActiveDia[eventoId] || null;
   const items = selectedDia ? categoriasOfDia(eventoId, selectedDia) : categoriasOfEvento(eventoId);
+  const totalTimes = items.reduce((soma, {chave}) => soma + (chave.numTimes || 0), 0);
+  const statsRow = `<div class="evt-stats-row">
+    <span class="stat-chip">📅 <b>${dias.length}</b> dia${dias.length===1?'':'s'}</span>
+    <span class="stat-chip">🏆 <b>${items.length}</b> categoria${items.length===1?'':'s'}</span>
+    <span class="stat-chip">👥 <b>${totalTimes}</b> equipe${totalTimes===1?'':'s'}</span>
+  </div>`;
   const pubDayTabs = dias.length > 1 ? `<div class="tabs" style="overflow-x:auto; margin-top:2px;">
     <div class="tab ${!selectedDia?'active':''}" onclick="setPubDia('${eventoId}', null)">Todos</div>
     ${dias.map(d => `<div class="tab ${d===selectedDia?'active':''}" onclick="setPubDia('${eventoId}','${d}')">${formatDiaLabelFull(d)}</div>`).join('')}
@@ -3073,8 +3120,8 @@ function renderPubEventoView(eventoId){
     <div class="regras-toggle" id="regrasToggle" onclick="toggleRegras()">Ler mais ▾</div>
   </div>` : '';
 
-  const catGrid = items.length ? `<div class="cat-grid">
-    ${items.map(({cat, chave}) => {
+  const catGridItemsHtml = (lista) => `<div class="cat-grid">
+    ${lista.map(({cat, chave}) => {
       const st = chaveStatus(chave);
       const horaTag = cat.horaInicio ? `⏰ ${escapeHtml(cat.horaInicio)} · ` : '';
       return `<div class="cat-grid-item" onclick="location.hash='/pub/chave/${chave.id}'">
@@ -3086,7 +3133,20 @@ function renderPubEventoView(eventoId){
         </div>
       </div>`;
     }).join('')}
-  </div>` : `<div class="empty"><div class="big">🏐</div><div style="font-weight:700;">${selectedDia ? 'Nenhuma categoria nesse dia' : 'Nenhuma categoria criada ainda'}</div></div>`;
+  </div>`;
+  // "Todos" (nenhum dia selecionado) com mais de um dia: divide a lista em
+  // seções por dia (pedido do Ed, 17/09/2026) em vez do grid único
+  // misturando tudo -- um dia só (ou já filtrado por aba) continua sendo
+  // um grid direto, sem cabeçalho repetido dizendo o óbvio.
+  const catGrid = !items.length
+    ? `<div class="empty"><div class="big">🏐</div><div style="font-weight:700;">${selectedDia ? 'Nenhuma categoria nesse dia' : 'Nenhuma categoria criada ainda'}</div></div>`
+    : (!selectedDia && dias.length > 1)
+      ? dias.map((d) => {
+          const doDia = items.filter(({cat}) => cat.data === d);
+          if(!doDia.length) return '';
+          return `<div class="cat-day-heading">📅 ${formatDiaLabelFull(d)}</div>${catGridItemsHtml(doDia)}`;
+        }).join('')
+      : catGridItemsHtml(items);
 
   app.innerHTML = `
     ${header(escapeHtml(ev.nome) + (ev.edicao ? ' <span class="header-edicao">— '+escapeHtml(ev.edicao)+'</span>' : ''), null, '/', '', ev.logoUrl)}
@@ -3097,6 +3157,7 @@ function renderPubEventoView(eventoId){
         <span class="status-badge ${status.cls}">${status.label}</span>
       </div>
       ${metaRow}
+      ${statsRow}
       <button class="btn accent" style="margin:12px 0 8px;" onclick="document.getElementById('categoriasSection').scrollIntoView({behavior:'smooth'})">🏆 Ver categorias</button>
       ${dias.length ? `<button class="btn accent" style="margin:0 0 8px; width:100%;" onclick="location.hash='/pub/visao-geral/${ev.id}/'+encodeURIComponent('${diaPadraoVisaoGeral(dias)}')">📋 Visão geral ao vivo</button>` : ''}
       <button class="btn ghost" style="margin:0 0 16px;" onclick="location.hash='/pub/podio/${ev.id}'">🏆 Pódio geral</button>
