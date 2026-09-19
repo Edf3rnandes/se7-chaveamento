@@ -1192,6 +1192,11 @@ TABELA_OFICIAL_COM_PROBLEMA.forEach(n => { BRACKETS[n] = buildDuplaCruzada(n); }
 
 const SIZES = Object.keys(BRACKETS).map(Number).sort((a,b)=>a-b);
 
+// Estado (UF) do atleta (Ed, 18/09: "cadastrar o estado da pessoa") — lista
+// fixa das 27 UFs do Brasil, sigla mesmo (é assim que a CBVP mostra, ex.
+// "EVANDRO/RJ").
+const ESTADOS_BR = ['AC','AL','AP','AM','BA','CE','DF','ES','GO','MA','MT','MS','MG','PA','PB','PR','PE','PI','RJ','RN','RS','RO','RR','SC','SP','SE','TO'];
+
 const PHASE_LABELS = {
   "GP ÚNICO":"Grupo único (todos x todos)",
   "GRUPO":"Fase de grupos / chave",
@@ -1327,6 +1332,13 @@ let _categoriasCache = [];
 // do menu principal. Um único documento fixo (config/geral) em vez de uma
 // coleção, porque só existe essa configuração por enquanto.
 let _configCache = { menuBgUrl: null };
+// Catálogo de CTs (Ed, 18/09: "cadastramos previamente os CTs pra unificar
+// as informações, caso não tenha o CT do atleta, que o atleta possa
+// cadastrar e eu confirmar posteriormente") — coleção pública igual a
+// eventos/chaves/categorias, lida por qualquer um (inclusive antes de
+// logar, pro autocomplete do cadastro de atleta), escrita só otimista aqui
+// e revisada pelo organizador em renderCtsPendentesView().
+let _ctsCache = [];
 
 // Firestore flatly rejects any field that's a nested array — an array whose
 // elements are themselves arrays, like sets:[[21,15]] — with "Nested arrays
@@ -1400,6 +1412,10 @@ function attachLiveListeners(){
     _configCache = Object.assign({ menuBgUrl:null }, geral ? geral.data() : {});
     route();
   }, err => console.error('config onSnapshot', err)));
+  _liveUnsubs.push(fbDb.collection('cts').onSnapshot(snap => {
+    _ctsCache = snap.docs.map(d => Object.assign({ id: d.id }, d.data()));
+    route();
+  }, err => console.error('cts onSnapshot', err)));
 }
 attachLiveListeners();
 // Reabre os listeners quando a aba volta a ficar visível (troca de app,
@@ -1638,12 +1654,21 @@ function attachMinhasInscricoesListener(){
     route();
   }, err => console.error('minhasInscricoes onSnapshot', err));
 }
-function attachOrganizadorInscricoesListeners(){
-  if(_orgInscricoesUnsubs.length) return;
-  _orgInscricoesUnsubs.push(fbDb.collection('atletas').onSnapshot(snap => {
+// Listener de TODOS os atletas cadastrados — independente do papel (usado
+// pelo organizador pra revisar inscrições/CTs, e também pelo atleta comum na
+// tela de inscrição pra buscar o parceiro pelo CPF, ver buscarParceiroPorCpf
+// mais abaixo). Um único unsub compartilhado (não duplica se já ligado).
+let _atletasUnsub = null;
+function attachAtletasListener(){
+  if(_atletasUnsub) return;
+  _atletasUnsub = fbDb.collection('atletas').onSnapshot(snap => {
     _atletasCache = snap.docs.map(d => Object.assign({ uid: d.id }, d.data()));
     route();
-  }, err => console.error('atletas onSnapshot', err)));
+  }, err => console.error('atletas onSnapshot', err));
+}
+function attachOrganizadorInscricoesListeners(){
+  attachAtletasListener();
+  if(_orgInscricoesUnsubs.length) return;
   _orgInscricoesUnsubs.push(fbDb.collection('inscricoes').onSnapshot(snap => {
     _inscricoesCache = snap.docs.map(d => Object.assign({ id: d.id }, d.data()));
     route();
@@ -1657,12 +1682,87 @@ function limparEstadoAuthPessoal(){
   _roleChecked = false;
   _minhasInscricoesCache = [];
   if(_minhasInscricoesUnsub){ try{ _minhasInscricoesUnsub(); }catch(e){} _minhasInscricoesUnsub = null; }
+  if(_atletasUnsub){ try{ _atletasUnsub(); }catch(e){} _atletasUnsub = null; }
   _atletasCache = [];
   _inscricoesCache = [];
   _orgInscricoesUnsubs.forEach(unsub => { try{ unsub(); }catch(e){} });
   _orgInscricoesUnsubs = [];
 }
 function getAtletaByUidOrg(uid){ return _atletasCache.find(a => a.uid === uid); }
+// ---------- Catálogo de CTs (Ed, 18/09) ----------
+// Só os CONFIRMADOS entram no autocomplete do cadastro — os pendentes ainda
+// não foram revisados pelo organizador, então não devem parecer "oficiais"
+// pra quem está se cadastrando (mas continuam valendo pro atleta que já
+// digitou, até serem confirmados/renomeados/rejeitados).
+function listaCtsConfirmados(){
+  return _ctsCache.filter(c => !c.pendente).map(c => c.nome)
+    .sort((a,b) => a.localeCompare(b, 'pt-BR', { sensitivity:'base' }));
+}
+function listaCtsPendentes(){
+  return _ctsCache.filter(c => c.pendente).sort((a,b) => a.criadoEm - b.criadoEm);
+}
+// Chamado sempre que um atleta digita um CT no cadastro (ou o organizador
+// aprova uma inscrição com um CT novo) — se já existe um CT com esse nome
+// (comparação normalizada, ignora acento/caixa), não faz nada; senão cria
+// um registro PENDENTE pra revisão posterior (nunca cria duplicado, nunca
+// bloqueia o cadastro do atleta esperando essa revisão).
+function garantirCtCadastrado(nomeCt){
+  const nome = (nomeCt||'').trim();
+  if(!nome) return;
+  const jaExiste = _ctsCache.some(c => normPersonName(c.nome) === normPersonName(nome));
+  if(jaExiste) return;
+  const doc = { id: uid('ct'), nome, pendente:true, criadoEm: Date.now() };
+  _ctsCache.push(doc);
+  const wireData = Object.assign({}, doc);
+  delete wireData.id;
+  fbDb.collection('cts').doc(doc.id).set(wireData).catch(err => console.error('garantirCtCadastrado', err));
+}
+// Confirma um CT pendente do jeito que está (sem renomear).
+function confirmarCt(id){
+  const ct = _ctsCache.find(c => c.id === id);
+  if(!ct) return;
+  ct.pendente = false;
+  fbDb.collection('cts').doc(id).update({ pendente:false }).catch(err => console.error('confirmarCt', err));
+  toast('CT "' + ct.nome + '" confirmado');
+}
+// Confirma renomeando pro nome "canônico" certo — além de corrigir o próprio
+// registro do CT, atualiza também o campo ct de qualquer atleta que já
+// tenha usado o nome antigo (unifica de fato, que era o pedido do Ed:
+// "cadastramos previamente os CTs para unificar as informações").
+function renomearEConfirmarCt(id, novoNome){
+  const ct = _ctsCache.find(c => c.id === id);
+  const nome = (novoNome||'').trim();
+  if(!ct || !nome) return;
+  const nomeAntigoNorm = normPersonName(ct.nome);
+  ct.nome = nome; ct.pendente = false;
+  fbDb.collection('cts').doc(id).update({ nome, pendente:false }).catch(err => console.error('renomearEConfirmarCt', err));
+  _atletasCache.filter(a => normPersonName(a.ct||'') === nomeAntigoNorm).forEach(a => {
+    a.ct = nome;
+    fbDb.collection('atletas').doc(a.uid).update({ ct: nome }).catch(err => console.error('renomearEConfirmarCt/atleta', err));
+  });
+  toast('CT confirmado como "' + nome + '"');
+}
+function rejeitarCt(id){
+  if(!confirm('Excluir esse CT da lista pendente?')) return;
+  _ctsCache = _ctsCache.filter(c => c.id !== id);
+  fbDb.collection('cts').doc(id).delete().catch(err => console.error('rejeitarCt', err));
+  toast('CT excluído');
+}
+function renderCtsPendentesView(){
+  const pendentes = listaCtsPendentes();
+  const rows = pendentes.map(c => `<div class="card">
+    <div style="font-weight:800; font-size:15.5px;">${escapeHtml(c.nome)}</div>
+    <div class="hint">Cadastrado por um atleta em ${new Date(c.criadoEm).toLocaleDateString('pt-BR')}</div>
+    <div style="display:flex; gap:6px; margin-top:8px; flex-wrap:wrap;">
+      <input type="text" value="${escapeHtmlAttr(c.nome)}" id="ctRenomear_${c.id}" style="flex:1; min-width:120px;">
+      <button class="btn accent small" onclick="renomearEConfirmarCt('${c.id}', document.getElementById('ctRenomear_${c.id}').value)">✅ Confirmar</button>
+      <button class="btn ghost small" onclick="rejeitarCt('${c.id}')">✕ Excluir</button>
+    </div>
+  </div>`).join('');
+  app.innerHTML = `
+    ${header('CTs pendentes', pendentes.length + ' aguardando revisão', '/organizador')}
+    <div class="wrap">${rows || '<div class="empty"><div class="big">✅</div><div style="font-weight:700;">Nenhum CT pendente agora</div></div>'}</div>`;
+}
 function getInscricao(id){ return _inscricoesCache.find(i => i.id === id) || _minhasInscricoesCache.find(i => i.id === id); }
 // Otimista igual updateChave/updateEvento/updateCategoria — o atleta vê a
 // própria inscrição na hora, sem esperar o round-trip do Firestore (mesmo
@@ -2513,6 +2613,82 @@ function computeRankingCampeonato(nomeCampeonato){
     return { categoriaNome: catNome, atletas: linhas.length, linhas };
   });
 }
+// Igual à caminhada de computeRankingCampeonato, só que devolve um Map
+// key->pontos (a duplaCampeonatoKey de cada dupla) em vez de linhas prontas
+// pra exibir — é o que disponibilizarChaveamento() usa pra ordenar os times
+// de UMA chave por pontos já acumulados no campeonato (metodo "ranking da
+// etapa"). Isolado por categoria (chave.nome), igual ao ranking por dupla.
+function pontosAcumuladosPorDuplaCategoria(nomeCampeonato, categoriaNome){
+  const map = new Map();
+  if(!nomeCampeonato) return map;
+  const eventos = loadEventos().filter(ev => (ev.campeonato||'').trim() === nomeCampeonato);
+  eventos.forEach(ev => {
+    categoriasOfEvento(ev.id).forEach(({chave}) => {
+      if(chave.nome !== categoriaNome) return;
+      const cls = computeClassificacaoComPontosEKeys(chave);
+      cls.linhas.forEach(l => {
+        l.equipes.forEach(eq => {
+          if(!eq.key) return;
+          map.set(eq.key, (map.get(eq.key)||0) + l.pontos);
+        });
+      });
+    });
+  });
+  return map;
+}
+
+// ---------- Visibilidade do chaveamento (Ed, 18/09: "isso aqui só deve
+// aparecer quando começar a competição, quando for divulgado... disponibilizar
+// confronto, disponibilizar árvore, disponibilizar chaveamento das
+// competições") ----------
+// Categorias CRIADAS ANTES dessa funcionalidade não têm o campo
+// chaveamentoLiberado (undefined) — precisam continuar EXATAMENTE como
+// estavam (chaveamento visível), pra não sumir nada de torneio já rolando.
+// Só uma chave NOVA nasce com chaveamentoLiberado:false explicitamente (ver
+// saveSetup) e portanto começa escondida até o organizador disponibilizar.
+function chaveamentoVisivel(chave){ return !chave || chave.chaveamentoLiberado !== false; }
+// Disponibiliza o chaveamento de uma categoria: define a ordem dos times
+// (sorteio aleatório OU pelos pontos já acumulados no campeonato dessa
+// etapa — as duas opções que o Ed confirmou) e marca liberado. Depois disso
+// não tem como "esconder de novo" pela UI — é uma ação de mão única, igual
+// publicar um evento.
+function disponibilizarChaveamento(chaveId, metodo){
+  const chave = getChave(chaveId);
+  if(!chave) return;
+  if(chaveamentoVisivel(chave)){ toast('Esse chaveamento já foi disponibilizado'); return; }
+  const times = chave.times || [];
+  const comDados = times.filter(t => teamRowHasData(t, chave.modalidade));
+  if(comDados.length < 2){ toast('Cadastre pelo menos 2 times antes de disponibilizar o chaveamento'); return; }
+  let novaOrdem;
+  if(metodo === 'sorteio'){
+    novaOrdem = times.slice();
+    for(let i = novaOrdem.length - 1; i > 0; i--){
+      const j = Math.floor(Math.random() * (i + 1));
+      const tmp = novaOrdem[i]; novaOrdem[i] = novaOrdem[j]; novaOrdem[j] = tmp;
+    }
+  } else if(metodo === 'ranking'){
+    const cat = categoriaByChaveId(chaveId);
+    const ev = cat ? getEvento(cat.eventoId) : null;
+    const nomeCampeonato = ev ? (ev.campeonato||'').trim() : '';
+    const pontosMap = pontosAcumuladosPorDuplaCategoria(nomeCampeonato, chave.nome);
+    novaOrdem = times.map((t,i) => {
+      const key = t ? duplaCampeonatoKey(chave.modalidade, t) : null;
+      return { t, i, pts: key ? (pontosMap.get(key)||0) : 0 };
+    }).sort((a,b) => (b.pts - a.pts) || (a.i - b.i)).map(x => x.t);
+  } else {
+    toast('Método de definição da ordem inválido');
+    return;
+  }
+  chave.times = novaOrdem;
+  chave.chaveamentoLiberado = true;
+  updateChave(chave);
+  toast('Chaveamento disponibilizado — o público já vê os confrontos');
+}
+function confirmDisponibilizarChaveamento(chaveId, metodo){
+  const label = metodo === 'sorteio' ? 'sorteio (ordem aleatória)' : 'ranking da etapa (pontos já acumulados no campeonato)';
+  if(!confirm('Disponibilizar o chaveamento dessa categoria usando ' + label + '? O público passa a ver os confrontos/árvore a partir de agora — não dá pra esconder de novo depois.')) return;
+  disponibilizarChaveamento(chaveId, metodo);
+}
 
 // For 4/5 duplas the organizer can skip the 3º/4º dispute (goes straight to the
 // final, 3º/4º decided by group average instead). This returns the game list a
@@ -3098,6 +3274,7 @@ function route(){
   // ---- organizador (autenticado) ----
   if(hash === '/organizador') return renderEventosHome();
   if(hash === '/inscricoes-pendentes') return renderInscricoesPendentesView();
+  if(hash === '/cts-pendentes') return renderCtsPendentesView();
   if(hash === '/novo-evento') return renderEventoSetup();
   if(parts[0] === 'editar-evento') return renderEventoSetup(parts[1]);
   if(parts[0] === 'evento') return renderEventoView(parts[1], parts[2] ? decodeURIComponent(parts[2]) : null);
@@ -3173,11 +3350,21 @@ function renderAtletaCadastro(){
       <div class="card">
         <label>Nome completo</label>
         <input type="text" id="acNome" placeholder="Seu nome completo">
+        <label>Nome de atleta (opcional)</label>
+        <input type="text" id="acNomeAtleta" placeholder="Ex: como você quer aparecer nas listas e chaves">
+        <div class="hint" style="margin-top:-2px;">Usado nas duplas/chaves depois que a inscrição for aprovada — deixe em branco pra usar seu nome completo mesmo.</div>
         <label>Data de nascimento</label>
         <input type="date" id="acNascimento">
         <div class="hint" style="margin-top:-2px;">Fica só no seu cadastro — nunca aparece no site público.</div>
+        <label>Estado</label>
+        <select id="acEstado">
+          <option value="">Selecionar…</option>
+          ${ESTADOS_BR.map(uf => `<option value="${uf}">${uf}</option>`).join('')}
+        </select>
         <label>CT (centro de treinamento)</label>
-        <input type="text" id="acCt" placeholder="Ex: Praia Clube">
+        <input type="text" id="acCt" list="ctsExistentesCadastro" placeholder="Ex: Praia Clube">
+        <datalist id="ctsExistentesCadastro">${listaCtsConfirmados().map(c => `<option value="${escapeHtmlAttr(c)}">`).join('')}</datalist>
+        <div class="hint" style="margin-top:-2px;">Se o seu CT não estiver na lista, pode digitar um novo — ele entra pendente até o organizador confirmar.</div>
         <label>Telefone/WhatsApp</label>
         <input type="text" id="acTelefone" placeholder="(83) 99999-9999">
         <label>CPF</label>
@@ -3193,7 +3380,9 @@ function renderAtletaCadastro(){
 }
 function doAtletaCadastro(){
   const nome = (document.getElementById('acNome').value||'').trim();
+  const nomeAtleta = (document.getElementById('acNomeAtleta').value||'').trim();
   const dataNascimento = document.getElementById('acNascimento').value||'';
+  const estado = document.getElementById('acEstado').value||'';
   const ct = (document.getElementById('acCt').value||'').trim();
   const telefone = (document.getElementById('acTelefone').value||'').trim();
   const cpf = (document.getElementById('acCpf').value||'').replace(/\D/g,'');
@@ -3203,6 +3392,7 @@ function doAtletaCadastro(){
   if(cpf.length !== 11){ atletaCadastroErro = 'CPF deve ter 11 números.'; renderAtletaCadastro(); return; }
   if(senha.length < 6){ atletaCadastroErro = 'A senha precisa ter pelo menos 6 caracteres.'; renderAtletaCadastro(); return; }
   atletaCadastroErro = '';
+  if(ct) garantirCtCadastrado(ct);
   // O onAuthStateChanged disparado por createUserWithEmailAndPassword já
   // chama carregarMeuAtletaPerfil() sozinho — mas nesse primeiro instante o
   // doc em "atletas/{uid}" ainda não existe (só vamos criar no .then abaixo),
@@ -3211,7 +3401,7 @@ function doAtletaCadastro(){
   // de novo DEPOIS que o .set() abaixo confirma corrige isso sem corrida.
   fbAuth.createUserWithEmailAndPassword(email, senha).then(cred => {
     return fbDb.collection('atletas').doc(cred.user.uid).set({
-      uid: cred.user.uid, email, nome, dataNascimento, ct, telefone, cpf, criadoEm: Date.now()
+      uid: cred.user.uid, email, nome, nomeAtleta, dataNascimento, estado, ct, telefone, cpf, criadoEm: Date.now()
     });
   }).then(() => {
     carregarMeuAtletaPerfil();
@@ -3227,7 +3417,9 @@ function hojeStr(){ return new Date().toISOString().slice(0,10); }
 // período de algum lote ainda não terminou (ver hint em renderEventoSetup).
 function eventosAbertosParaInscricao(){
   const hoje = hojeStr();
-  return loadEventos().filter(ev => ev.publicado === true && (ev.lotes||[]).length && (ev.lotes||[]).some(l => hoje <= l.fim));
+  return loadEventos().filter(ev => ev.publicado === true && (
+    ev.inscricaoGratuita === true || ((ev.lotes||[]).length && (ev.lotes||[]).some(l => hoje <= l.fim))
+  ));
 }
 function renderAtletaHome(){
   const perfil = getMeuAtletaPerfil();
@@ -3269,6 +3461,7 @@ function renderAtletaHome(){
 }
 let inscricaoFormState = null;
 function renderAtletaInscricaoForm(eventoId, categoriaId){
+  attachAtletasListener(); // precisa do catálogo completo pra buscarParceiroPorCpf
   const ev = getEvento(eventoId);
   const cat = getCategoria(categoriaId);
   const chave = cat ? getChave(cat.chaveId) : null;
@@ -3296,14 +3489,33 @@ function renderAtletaInscricaoForm(eventoId, categoriaId){
     return;
   }
   if(!inscricaoFormState || inscricaoFormState._categoriaId !== categoriaId){
-    inscricaoFormState = { _categoriaId: categoriaId, parceiros: ['','',''], camiseta:'' };
+    inscricaoFormState = { _categoriaId: categoriaId, _eventoId: eventoId, parceiros: ['','',''], parceirosCpf: ['','',''], parceirosUid: [null,null,null], camiseta:'' };
   }
   const s = inscricaoFormState;
   const parceirosCount = chave.modalidade === 'quarteto' ? 3 : 1;
-  const parceirosHtml = Array.from({length:parceirosCount}, (_,i) => `
-    <label>Nome do ${parceirosCount>1?('parceiro '+(i+1)):'parceiro(a) de dupla'}</label>
-    <input type="text" value="${escapeHtmlAttr(s.parceiros[i]||'')}" oninput="inscricaoFormState.parceiros[${i}]=this.value" placeholder="Nome completo">
-  `).join('');
+  // Busca por CPF (Ed, 18/09: "fazer uma busca pelo CPF do atleta que já
+  // está devidamente cadastrado ou cadastrar também o parceiro") — se achar
+  // um atleta com esse CPF já cadastrado na plataforma, preenche o nome
+  // sozinho (readonly, com um "trocar" pra digitar manualmente de novo);
+  // não achando, cai pro campo de nome livre de sempre (o parceiro "se
+  // cadastra" na prática só digitando o nome — pra virar conta de verdade
+  // ele precisa criar o próprio login em /atleta/cadastro).
+  const parceirosHtml = Array.from({length:parceirosCount}, (_,i) => {
+    const encontrado = s.parceirosUid[i];
+    const label = parceirosCount>1?('parceiro '+(i+1)):'parceiro(a) de dupla';
+    if(encontrado){
+      return `<label>CPF do ${label}</label>
+      <div class="hint" style="color:var(--success); font-weight:600;">✅ ${escapeHtml(s.parceiros[i]||'')} — cadastro encontrado</div>
+      <button class="btn ghost small" style="margin-top:-4px; margin-bottom:8px;" onclick="limparParceiroEncontrado(${i})">Trocar / digitar outro nome</button>`;
+    }
+    return `<label>CPF do ${label} (opcional — pra buscar quem já tem cadastro)</label>
+      <div style="display:flex; gap:6px;">
+        <input type="text" inputmode="numeric" value="${escapeHtmlAttr(s.parceirosCpf[i]||'')}" oninput="inscricaoFormState.parceirosCpf[${i}]=this.value.replace(/\\D/g,'')" placeholder="Só números">
+        <button class="btn ghost small" style="width:auto; padding:0 14px;" onclick="buscarParceiroPorCpf(${i})">🔍 Buscar</button>
+      </div>
+      <label>Nome do ${label}</label>
+      <input type="text" value="${escapeHtmlAttr(s.parceiros[i]||'')}" oninput="inscricaoFormState.parceiros[${i}]=this.value" placeholder="Nome completo (se não achar pelo CPF)">`;
+  }).join('');
   const camisetaHtml = ev.pedirCamiseta ? `
     <label>Tamanho da camiseta</label>
     <select onchange="inscricaoFormState.camiseta=this.value">
@@ -3320,11 +3532,34 @@ function renderAtletaInscricaoForm(eventoId, categoriaId){
       </div>
       <div class="card" style="text-align:center;">
         <div class="hint">Valor desta inscrição (${ehPrimeira?'1ª categoria neste evento':'2ª categoria ou mais neste evento'})</div>
-        <div style="font-size:22px; font-weight:800;">R$ ${preco.toFixed(2).replace('.',',')}</div>
+        <div style="font-size:22px; font-weight:800;">${preco > 0 ? ('R$ ' + preco.toFixed(2).replace('.',',')) : 'Gratuita 🎉'}</div>
       </div>
       <button class="btn" onclick="enviarInscricao('${eventoId}','${categoriaId}',${preco})">Enviar inscrição</button>
-      <div class="hint" style="margin-top:8px;">O pagamento ainda é combinado direto com o organizador depois do envio — o QR Pix automático vem numa próxima etapa.</div>
+      <div class="hint" style="margin-top:8px;">${preco > 0 ? 'O pagamento ainda é combinado direto com o organizador depois do envio — o QR Pix automático vem numa próxima etapa.' : 'Inscrição sem cobrança — ainda assim precisa ser aprovada pelo organizador.'}</div>
     </div>`;
+}
+// Busca um atleta cadastrado pelo CPF (11 dígitos) na cache já sincronizada
+// via attachAtletasListener() e preenche o nome do parceiro automaticamente
+// se achar — nunca deixa escolher o próprio CPF do titular como parceiro.
+function buscarParceiroPorCpf(i){
+  const s = inscricaoFormState;
+  if(!s) return;
+  const cpf = (s.parceirosCpf[i]||'').replace(/\D/g,'');
+  if(cpf.length !== 11){ toast('Digite um CPF válido (11 números)'); return; }
+  if(_authUser && cpf === (getMeuAtletaPerfil()||{}).cpf){ toast('Esse CPF é o seu próprio cadastro'); return; }
+  const encontrado = _atletasCache.find(a => (a.cpf||'') === cpf);
+  if(!encontrado){ toast('Nenhum atleta cadastrado com esse CPF — digite o nome dele manualmente abaixo'); return; }
+  s.parceiros[i] = (encontrado.nomeAtleta||'').trim() || encontrado.nome || '';
+  s.parceirosUid[i] = encontrado.uid;
+  renderAtletaInscricaoForm(s._eventoId, s._categoriaId);
+}
+function limparParceiroEncontrado(i){
+  const s = inscricaoFormState;
+  if(!s) return;
+  s.parceirosUid[i] = null;
+  s.parceiros[i] = '';
+  s.parceirosCpf[i] = '';
+  renderAtletaInscricaoForm(s._eventoId, s._categoriaId);
 }
 function enviarInscricao(eventoId, categoriaId, preco){
   const s = inscricaoFormState;
@@ -3333,10 +3568,11 @@ function enviarInscricao(eventoId, categoriaId, preco){
   if(!chave || !s) return;
   const parceirosCount = chave.modalidade === 'quarteto' ? 3 : 1;
   const parceiros = (s.parceiros||[]).slice(0, parceirosCount).map(p=>(p||'').trim());
+  const parceirosUids = (s.parceirosUid||[]).slice(0, parceirosCount);
   if(parceiros.some(p => !p)){ toast('Preencha o nome de todos os parceiros'); return; }
   criarInscricao({
     atletaUid: _authUser.uid, eventoId, categoriaId, chaveId: chave.id,
-    parceiros, tamanhoCamiseta: s.camiseta || null, valor: preco
+    parceiros, parceirosUids, tamanhoCamiseta: s.camiseta || null, valor: preco
   }).then(() => {
     toast('Inscrição enviada! Aguarde a aprovação do organizador.');
     location.hash = '/atleta/minhas-inscricoes';
@@ -3374,8 +3610,8 @@ function renderInscricoesPendentesView(){
     const ev = getEvento(i.eventoId); const cat = getCategoria(i.categoriaId); const chave = cat?getChave(cat.chaveId):null;
     if(!atleta || !ev || !cat || !chave) return '';
     return `<div class="card">
-      <div style="font-weight:800; font-size:15.5px;">${escapeHtml(atleta.nome||'—')}</div>
-      <div class="hint">CT: ${escapeHtml(atleta.ct||'—')} • Tel: ${escapeHtml(atleta.telefone||'—')} • CPF: ${escapeHtml(atleta.cpf||'—')}</div>
+      <div style="font-weight:800; font-size:15.5px;">${escapeHtml(atleta.nome||'—')}${atleta.nomeAtleta ? (' <span style="font-weight:400; color:var(--muted2);">('+escapeHtml(atleta.nomeAtleta)+')</span>') : ''}</div>
+      <div class="hint">CT: ${escapeHtml(atleta.ct||'—')} • Estado: ${escapeHtml(atleta.estado||'—')} • Tel: ${escapeHtml(atleta.telefone||'—')} • CPF: ${escapeHtml(atleta.cpf||'—')}</div>
       <div class="hint" style="margin-top:4px;">Categoria: <strong>${escapeHtml(chave.nome)}</strong> (${escapeHtml(ev.nome)})</div>
       ${(i.parceiros||[]).length ? `<div class="hint">Com: ${i.parceiros.map(p=>escapeHtml(p)).join(', ')}</div>` : ''}
       ${i.tamanhoCamiseta ? `<div class="hint">Camiseta: ${escapeHtml(i.tamanhoCamiseta)}</div>` : ''}
@@ -3406,9 +3642,17 @@ function aprovarInscricao(id){
   const chave = cat ? getChave(cat.chaveId) : null;
   const atleta = getAtletaByUidOrg(insc.atletaUid);
   if(!chave || !atleta){ toast('Não achei a chave ou o perfil do atleta'); return; }
+  // Prefere o "nome de atleta" (curto, de exibição — Ed, 18/09: "nome de
+  // atleta também é importante", inspirado no jeito da CBVP de mostrar
+  // "EVANDRO/RJ" na chave em vez do nome completo) quando o atleta cadastrou
+  // um; sem isso, cai pro nome completo de sempre. Só o titular tem essa
+  // preferência hoje — o(s) parceiro(s) entram como texto puro (ver
+  // enviarInscricao/buscarParceiroPorCpf) e já usam o nome preferido deles
+  // quando encontrados por CPF.
+  const nomeExibicao = (atleta.nomeAtleta||'').trim() || atleta.nome;
   const novoTime = chave.modalidade === 'quarteto'
-    ? { nome:'', atletas:[atleta.nome].concat(insc.parceiros||[]).slice(0,6), ct: atleta.ct||'' }
-    : { atleta1: atleta.nome, atleta2: (insc.parceiros||[])[0]||'', ct: atleta.ct||'' };
+    ? { nome:'', atletas:[nomeExibicao].concat(insc.parceiros||[]).slice(0,6), ct: atleta.ct||'' }
+    : { atleta1: nomeExibicao, atleta2: (insc.parceiros||[])[0]||'', ct: atleta.ct||'' };
   const novoTimes = (chave.times||[]).concat([novoTime]);
   if(novoTimes.length > chave.numTimes){
     toast('Essa categoria já está com todas as ' + chave.numTimes + ' vagas preenchidas — ajuste manualmente em "Editar chave" se quiser abrir mais');
@@ -3532,6 +3776,7 @@ function renderEventosHome(){
       ${body}
       <button class="btn accent" style="margin-top:6px;" onclick="location.hash='/novo-evento'">+ Novo evento</button>
       <button class="btn secondary" style="margin-top:8px;" onclick="location.hash='/inscricoes-pendentes'">📋 Inscrições pendentes${_inscricoesCache.filter(i=>i.status==='pendente').length ? ' ('+_inscricoesCache.filter(i=>i.status==='pendente').length+')' : ''}</button>
+      <button class="btn secondary" style="margin-top:8px;" onclick="location.hash='/cts-pendentes'">🏢 CTs pendentes${listaCtsPendentes().length ? ' ('+listaCtsPendentes().length+')' : ''}</button>
       <button class="btn secondary" style="margin-top:8px;" onclick="location.hash='/ranking-atletas'">🏅 Ranking de atletas</button>
       <button class="btn ghost" style="margin-top:8px;" onclick="location.hash='/'">👁 Abrir modo público (somente leitura)</button>
     </div>`;
@@ -3565,8 +3810,8 @@ function renderEventoSetup(editId){
       fotoUrl:editing.fotoUrl||null, logoUrl:editing.logoUrl||null, local:editing.local||'', contato:editing.contato||'', regras:editing.regras||'',
       patrocinadores: (editing.patrocinadores||[]).slice(), quadrasNomes: (editing.quadrasNomes||[]).map(normQuadraNome), quadraNomeInput:'', quadraNomeLado:'esquerda',
       chavePix: editing.chavePix||'', lotes: (editing.lotes||[]).map(l => Object.assign({}, l)), pedirCamiseta: !!editing.pedirCamiseta,
-      campeonato: editing.campeonato||''
-    } : { _editId:null, nome:'', edicao:'', dataInicio:'', dataFim:'', fotoUrl:null, logoUrl:null, local:'', contato:'', regras:'', patrocinadores:[], quadrasNomes:[], quadraNomeInput:'', quadraNomeLado:'esquerda', chavePix:'', lotes:[], pedirCamiseta:false, campeonato:'' };
+      campeonato: editing.campeonato||'', inscricaoGratuita: !!editing.inscricaoGratuita
+    } : { _editId:null, nome:'', edicao:'', dataInicio:'', dataFim:'', fotoUrl:null, logoUrl:null, local:'', contato:'', regras:'', patrocinadores:[], quadrasNomes:[], quadraNomeInput:'', quadraNomeLado:'esquerda', chavePix:'', lotes:[], pedirCamiseta:false, campeonato:'', inscricaoGratuita:false };
   }
   const s = eventoSetupState;
   const fotoPreview = s.fotoUrl ? `<img class="foto-upload-preview" src="${s.fotoUrl}">` : '';
@@ -3658,10 +3903,17 @@ function renderEventoSetup(editId){
         <label>Chave Pix (opcional)</label>
         <div class="hint" style="margin-top:-2px;">Usada pra gerar o QR code de pagamento na inscrição de atletas pelo site.</div>
         <input type="text" placeholder="Ex: financeiro@se7volei.com.br" value="${escapeHtmlAttr(s.chavePix)}" oninput="eventoSetupState.chavePix=this.value">
+        <label style="display:flex; align-items:center; gap:8px; margin-top:12px; cursor:pointer;">
+          <input type="checkbox" ${s.inscricaoGratuita?'checked':''} onchange="eventoSetupState.inscricaoGratuita=this.checked; renderEventoSetup(eventoSetupState._editId||'')" style="width:auto;">
+          <span>Inscrição gratuita (sem cobrança)</span>
+        </label>
+        <div class="hint" style="margin-top:-2px;">A inscrição continua passando pela sua aprovação — só o valor cobrado vira R$ 0,00, sem precisar de lote nenhum.</div>
+        ${s.inscricaoGratuita ? '' : `
         <label style="margin-top:12px;">Lotes de inscrição (opcional)</label>
-        <div class="hint" style="margin-top:-2px;">O valor da inscrição depende da data em que o atleta se inscreve (o lote com o período ativo) e de ser a 1ª categoria dele nesse evento ou a 2ª/3ª ou mais. Cadastre um lote pra cada faixa de datas — os períodos não devem se sobrepor. Sem nenhum lote cadastrado, a inscrição pelo site fica desabilitada pra esse evento.</div>
+        <div class="hint" style="margin-top:-2px;">O valor da inscrição depende da data em que o atleta se inscreve (o lote com o período ativo) e de ser a 1ª categoria dele nesse evento ou a 2ª/3ª ou mais. Cadastre um lote pra cada faixa de datas — os períodos não devem se sobrepor. Sem nenhum lote cadastrado (e sem marcar "gratuita" acima), a inscrição pelo site fica desabilitada pra esse evento.</div>
         ${loteEditRows(s.lotes)}
         <button class="btn ghost small" style="margin-top:8px;" onclick="addLote()">+ Adicionar lote</button>
+        `}
         <label style="display:flex; align-items:center; gap:8px; margin-top:14px; cursor:pointer;">
           <input type="checkbox" ${s.pedirCamiseta?'checked':''} onchange="eventoSetupState.pedirCamiseta=this.checked" style="width:auto;">
           <span>Pedir tamanho de camiseta na inscrição</span>
@@ -3902,7 +4154,7 @@ function saveEventoSetup(editId){
   if(!s.nome || !s.nome.trim()){ toast('Dê um nome para o evento'); return; }
   if(!s.dataInicio || !s.dataFim){ toast('Informe a data inicial e final'); return; }
   if(s.dataFim < s.dataInicio){ toast('A data final não pode ser antes da inicial'); return; }
-  const erroLotes = validarLotes(s.lotes || []);
+  const erroLotes = s.inscricaoGratuita ? null : validarLotes(s.lotes || []);
   if(erroLotes){ toast(erroLotes); return; }
   if(editId){
     const ev = getEvento(editId);
@@ -3913,6 +4165,7 @@ function saveEventoSetup(editId){
     ev.local = s.local.trim(); ev.contato = s.contato.trim(); ev.regras = s.regras.trim();
     ev.chavePix = (s.chavePix||'').trim(); ev.lotes = (s.lotes||[]).slice(); ev.pedirCamiseta = !!s.pedirCamiseta;
     ev.campeonato = (s.campeonato||'').trim();
+    ev.inscricaoGratuita = !!s.inscricaoGratuita;
     updateEvento(ev);
     toast('Evento atualizado');
     location.hash = '/evento/' + ev.id;
@@ -3923,7 +4176,7 @@ function saveEventoSetup(editId){
       fotoUrl:s.fotoUrl||null, logoUrl:s.logoUrl||null, patrocinadores: s.patrocinadores || [], quadrasNomes: s.quadrasNomes || [],
       local:s.local.trim(), contato:s.contato.trim(), regras:s.regras.trim(),
       chavePix: (s.chavePix||'').trim(), lotes: (s.lotes||[]).slice(), pedirCamiseta: !!s.pedirCamiseta,
-      campeonato: (s.campeonato||'').trim(),
+      campeonato: (s.campeonato||'').trim(), inscricaoGratuita: !!s.inscricaoGratuita,
       publicado:false, criadoEm:Date.now()
     };
     updateEvento(ev);
@@ -3939,6 +4192,11 @@ function saveEventoSetup(editId){
 // cuja faixa [inicio,fim] contém a data de referência; sem lote ativo,
 // retorna null (quem chamar decide o que fazer — ex.: bloquear inscrição).
 function precoInscricao(evento, dataRefStr, ehPrimeira){
+  // Evento gratuito (Ed, 18/09: "tem a necessidade de fazer a inscrição em
+  // um campeonato gratuito") — inscrição sempre R$0, sem depender de lote
+  // nenhum; a inscrição AINDA passa pela fila de aprovação de sempre (só o
+  // valor que muda, não o fluxo pendente → aprovada).
+  if(evento.inscricaoGratuita === true) return 0;
   const lotes = evento.lotes || [];
   const lote = lotes.find(l => l.inicio <= dataRefStr && dataRefStr <= l.fim);
   if(!lote) return null;
@@ -4108,7 +4366,7 @@ function renderPubEventos(){
       const banner = ev.fotoUrl ? `<img src="${ev.fotoUrl}">` : `<div class="banner-ph">🏐</div>`;
       const status = eventoStatusInfo(ev);
       const lote = loteAtivoHoje(ev);
-      const precoPill = lote ? `<span class="status-badge price-pill">${formatBRL(lote.valor1a)}</span>` : '';
+      const precoPill = ev.inscricaoGratuita ? `<span class="status-badge price-pill">Gratuito</span>` : (lote ? `<span class="status-badge price-pill">${formatBRL(lote.valor1a)}</span>` : '');
       const chaves = categoriasOfEvento(ev.id).map(({chave}) => chave.nome);
       const maxTags = 3;
       const tagsRow = chaves.length ? `<div class="evt-tags">
@@ -4166,11 +4424,14 @@ function renderPubEventoView(eventoId){
   const ev = getEvento(eventoId);
   if(!isEventoPublicado(ev)){ location.hash='/'; return; }
   const loteHoje = loteAtivoHoje(ev);
-  const heroPills = loteHoje ? `<div class="hero-pills">
+  const heroPills = ev.inscricaoGratuita ? `<div class="hero-pills">
+    <span class="hero-pill">Inscrição gratuita</span>
+    <span class="hero-pill open">Inscrições abertas</span>
+  </div>` : (loteHoje ? `<div class="hero-pills">
     <span class="hero-pill">${formatBRL(loteHoje.valor1a)}/pessoa</span>
     <span class="hero-pill">${formatBRL(loteHoje.valorDemais)} — 2ª inscrição</span>
     <span class="hero-pill open">Inscrições abertas</span>
-  </div>` : '';
+  </div>` : '');
   const banner = ev.fotoUrl ? `<div class="evento-hero-wrap"><img class="evento-hero" src="${ev.fotoUrl}">${heroPills}</div>` : (heroPills ? `<div class="evento-hero-wrap noimg">${heroPills}</div>` : '');
   const status = eventoStatusInfo(ev);
   const periodo = formatPeriodoLong(ev.dataInicio, ev.dataFim);
@@ -4212,11 +4473,12 @@ function renderPubEventoView(eventoId){
   function catGridItemHtml({cat, chave}){
     const st = chaveStatus(chave);
     const horaTag = cat.horaInicio ? `⏰ ${escapeHtml(cat.horaInicio)} · ` : '';
+    const naoDivulgado = !chaveamentoVisivel(chave);
     return `<div class="cat-grid-item" onclick="location.hash='/pub/chave/${chave.id}'">
       <div class="cgi-nome">${escapeHtml(chave.nome)}</div>
       <div class="cgi-dia">${horaTag}${formatDiaLabel(cat.data)}</div>
       <div class="cgi-bottom">
-        <span class="status-badge ${st.cls}">${st.label}</span>
+        <span class="status-badge ${naoDivulgado?'status-pending':st.cls}">${naoDivulgado?'🔒 Em breve':st.label}</span>
         <span class="cgi-max">${chave.numTimes} ${chave.modalidade==='quarteto'?'times':'duplas'}</span>
       </div>
     </div>`;
@@ -4338,6 +4600,28 @@ function renderPubMatchCard(chave, g){
 }
 let pubActiveTab = {};
 function setPubTab(id, tab){ pubActiveTab[id] = tab; renderPubChaveView(id); }
+// Tela pública/atleta pra uma categoria cujo chaveamento ainda não foi
+// disponibilizado (ver chaveamentoVisivel/disponibilizarChaveamento) — só
+// mostra quem já está inscrito, sem confrontos, árvore ou lista de atletas
+// por jogo (Ed, 18/09: "anteriormente somente a lista prévia para quem já
+// estiver cadastrado ou registrado na plataforma").
+function renderListaInscritosPreReveal(chave, backHash, logoUrl, sponsorFooter){
+  const times = (chave.times||[]).filter(t => teamRowHasData(t, chave.modalidade));
+  const rows = times.length ? times.map(t => `<div class="atleta-row">
+      <div class="atleta-nomes" style="flex:1;">${escapeHtml(timeDisplayName(chave.modalidade, t) || '—')}</div>
+      ${t.ct ? `<span class="hint">${escapeHtml(t.ct)}</span>` : ''}
+    </div>`).join('') : `<div class="empty"><div class="big">📋</div><div style="font-weight:700;">Nenhuma inscrição confirmada ainda</div></div>`;
+  return `
+    ${header(escapeHtml(chave.nome), times.length + ' inscrito' + (times.length===1?'':'s') + ' até agora', backHash, '', logoUrl)}
+    <div class="wrap-chave">
+      <div class="section-note">⏳ O chaveamento (confrontos/árvore) dessa categoria ainda não foi divulgado pelo organizador. Assim que for divulgado, os jogos aparecem aqui automaticamente.</div>
+      <div class="card">
+        <div class="card-title">👥 Lista de inscritos</div>
+        ${rows}
+      </div>
+      ${sponsorFooter}
+    </div>`;
+}
 function renderPubChaveView(id){
   const chave = getChave(id);
   if(!chave){ location.hash='/'; return; }
@@ -4347,6 +4631,13 @@ function renderPubChaveView(id){
   const evForChave = cat ? getEvento(cat.eventoId) : null;
   const logoUrl = evForChave ? evForChave.logoUrl : null;
   const sponsorFooter = sponsorFooterHtml(evForChave);
+  // Chaveamento ainda não divulgado (Ed, 18/09) — público e atleta só veem a
+  // lista prévia de inscritos, sem confrontos/árvore, até o organizador
+  // disponibilizar em renderChaveView.
+  if(!chaveamentoVisivel(chave)){
+    app.innerHTML = renderListaInscritosPreReveal(chave, backHash, logoUrl, sponsorFooter);
+    return;
+  }
   const games = effectiveGames(chave);
   const total = games.length;
   const done = games.filter(g => chave.resultados[g.num] && chave.resultados[g.num].vencedorSlot).length;
@@ -6265,6 +6556,10 @@ function saveSetup(editId){
       disputa3: s.disputa3,
       times: s.times,
       resultados: {},
+      // Categorias novas nascem com o chaveamento ESCONDIDO do público até o
+      // organizador clicar em "disponibilizar" (ver chaveamentoVisivel acima)
+      // — categorias já existentes (sem esse campo) continuam visíveis.
+      chaveamentoLiberado: false,
       criadoEm: Date.now()
     };
     updateChave(c);
@@ -6352,10 +6647,26 @@ function renderChaveView(id){
   const fullRanking = computeFullRanking(chave);
 
   const rankingLink = `<div class="ranking-link" onclick="setTab('${id}','__ranking__')">🏁 Ver ranking final</div>`;
+  // Card de "disponibilizar chaveamento" (Ed, 18/09) — só aparece enquanto
+  // a categoria nasceu escondida e o organizador ainda não divulgou. Fica
+  // junto do topActions pra aparecer em toda aba (lista/árvore/atletas/ranking).
+  const disponibilizarCard = !chaveamentoVisivel(chave) ? (() => {
+    const ev = _cat ? getEvento(_cat.eventoId) : null;
+    const temCampeonato = !!(ev && (ev.campeonato||'').trim());
+    return `<div class="card" style="border:2px dashed var(--primary); background:#eef4ff; margin-bottom:12px;">
+      <div class="card-title">🔒 Chaveamento ainda não divulgado</div>
+      <div class="hint" style="margin-top:-2px;">O público e os atletas só veem a lista de inscritos até você disponibilizar. Escolha como definir a ordem dos times (R1, R2...):</div>
+      <div style="display:flex; gap:8px; margin-top:8px; flex-wrap:wrap;">
+        <button class="btn accent small" style="flex:1;" onclick="confirmDisponibilizarChaveamento('${chave.id}','sorteio')">🎲 Sorteio</button>
+        <button class="btn accent small" style="flex:1;" ${temCampeonato?'':'disabled'} onclick="confirmDisponibilizarChaveamento('${chave.id}','ranking')">🏆 Ranking da etapa</button>
+      </div>
+      ${!temCampeonato ? `<div class="hint" style="margin-top:6px;">"Ranking da etapa" precisa que o evento tenha um campeonato/circuito definido (edite o evento).</div>` : ''}
+    </div>`;
+  })() : '';
   // Editar duplas / Zerar placares — movidos pro topo da tela a pedido do Ed
   // (antes ficavam lá embaixo, depois de rolar toda a lista de jogos ou a
   // árvore inteira).
-  const topActions = `<div class="footer-actions" style="margin-bottom:12px;">
+  const topActions = `${disponibilizarCard}<div class="footer-actions" style="margin-bottom:12px;">
     <button class="btn secondary" onclick="location.hash='/editar/${chave.id}'">Editar ${chave.modalidade==='quarteto'?'times':'duplas'}</button>
     <button class="btn ghost" onclick="resetResults('${chave.id}')">Zerar placares</button>
   </div>`;
