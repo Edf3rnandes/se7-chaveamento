@@ -1764,9 +1764,42 @@ function rejeitarCt(id){
   fbDb.collection('cts').doc(id).delete().catch(err => console.error('rejeitarCt', err));
   toast('CT excluído');
 }
+// Cadastro DIRETO de um CT pelo organizador (Ed, 21/09: "onde eu coloco
+// essa lista, onde eu preencho e onde elas aparecerão... eu vi que tem CTs
+// pendentes, mas onde eu faço o registro dos CTs") — diferente de
+// garantirCtCadastrado() (chamado quando um ATLETA digita um CT novo no
+// próprio cadastro, que sempre entra PENDENTE pra revisão), esse aqui é o
+// organizador cadastrando de próprio punho, então já entra CONFIRMADO
+// direto, sem passar pela fila.
+let ctCadastroErro = '';
+function cadastrarCtDireto(){
+  const input = document.getElementById('ctNovoNome');
+  const nome = (input && input.value || '').trim();
+  if(!nome){ ctCadastroErro = 'Digite o nome do CT'; renderCtsPendentesView(); return; }
+  const jaExiste = _ctsCache.some(c => normPersonName(c.nome) === normPersonName(nome));
+  if(jaExiste){ ctCadastroErro = 'Já existe um CT com esse nome'; renderCtsPendentesView(); return; }
+  const doc = { id: uid('ct'), nome, pendente:false, criadoEm: Date.now() };
+  _ctsCache.push(doc);
+  const wireData = Object.assign({}, doc);
+  delete wireData.id;
+  fbDb.collection('cts').doc(doc.id).set(wireData).catch(err => console.error('cadastrarCtDireto', err));
+  ctCadastroErro = '';
+  toast('CT "' + nome + '" cadastrado');
+  renderCtsPendentesView();
+}
+function excluirCtConfirmado(id){
+  const ct = _ctsCache.find(c => c.id === id);
+  if(!ct) return;
+  if(!confirm('Excluir o CT "' + ct.nome + '" da lista? Atletas que já usam esse nome não mudam sozinhos.')) return;
+  _ctsCache = _ctsCache.filter(c => c.id !== id);
+  fbDb.collection('cts').doc(id).delete().catch(err => console.error('excluirCtConfirmado', err));
+  toast('CT excluído');
+  renderCtsPendentesView();
+}
 function renderCtsPendentesView(){
   const pendentes = listaCtsPendentes();
-  const rows = pendentes.map(c => `<div class="card">
+  const confirmados = _ctsCache.filter(c => !c.pendente).sort((a,b) => a.nome.localeCompare(b.nome, 'pt-BR', { sensitivity:'base' }));
+  const pendRows = pendentes.map(c => `<div class="card">
     <div style="font-weight:800; font-size:15.5px;">${escapeHtml(c.nome)}</div>
     <div class="hint">Cadastrado por um atleta em ${new Date(c.criadoEm).toLocaleDateString('pt-BR')}</div>
     <div style="display:flex; gap:6px; margin-top:8px; flex-wrap:wrap;">
@@ -1775,9 +1808,26 @@ function renderCtsPendentesView(){
       <button class="btn ghost small" onclick="rejeitarCt('${c.id}')">✕ Excluir</button>
     </div>
   </div>`).join('');
+  const confirmadosRows = confirmados.map(c => `<div class="card" style="padding:10px 12px; display:flex; align-items:center; gap:8px;">
+    <div style="flex:1; font-weight:700;">${escapeHtml(c.nome)}</div>
+    <button class="btn ghost small" style="width:auto; padding:5px 10px;" onclick="excluirCtConfirmado('${c.id}')">✕</button>
+  </div>`).join('');
   app.innerHTML = `
-    ${header('CTs pendentes', pendentes.length + ' aguardando revisão', '/organizador')}
-    <div class="wrap">${rows || '<div class="empty"><div class="big">✅</div><div style="font-weight:700;">Nenhum CT pendente agora</div></div>'}</div>`;
+    ${header('Centros de treinamento', confirmados.length + ' cadastrados' + (pendentes.length ? (' • ' + pendentes.length + ' pendente'+(pendentes.length===1?'':'s')) : ''), '/organizador')}
+    <div class="wrap">
+      <div class="card">
+        <div class="card-title">➕ Cadastrar novo CT</div>
+        <div class="hint">Cadastre aqui direto — já entra confirmado na lista, pronto pra aparecer no cadastro dos atletas.</div>
+        <div style="display:flex; gap:6px; margin-top:8px;">
+          <input type="text" id="ctNovoNome" placeholder="Nome do centro de treinamento" style="flex:1;">
+          <button class="btn accent small" style="width:auto; padding:0 16px;" onclick="cadastrarCtDireto()">Cadastrar</button>
+        </div>
+        ${ctCadastroErro ? `<div class="hint" style="color:#c65b4a; margin-top:6px;">${escapeHtml(ctCadastroErro)}</div>` : ''}
+      </div>
+      ${pendentes.length ? `<div class="card-title" style="margin:14px 2px 6px;">⏳ Pendentes de revisão</div>${pendRows}` : ''}
+      <div class="card-title" style="margin:14px 2px 6px;">✅ Confirmados (${confirmados.length})</div>
+      ${confirmadosRows || '<div class="empty"><div class="big">🏢</div><div style="font-weight:700;">Nenhum CT cadastrado ainda</div></div>'}
+    </div>`;
 }
 function getInscricao(id){ return _inscricoesCache.find(i => i.id === id) || _minhasInscricoesCache.find(i => i.id === id); }
 // Otimista igual updateChave/updateEvento/updateCategoria — o atleta vê a
@@ -1943,17 +1993,30 @@ function markSyncPending(delta){
   }
 }
 
-// ---------- team modality (dupla / quarteto) ----------
+// ---------- team modality (dupla / trio / quarteto) ----------
+// 'trio' e 'quarteto' guardam o time como { nome, atletas:[...], ct } (nome
+// do time + lista de nomes, com N vagas conforme a modalidade); 'dupla'
+// guarda como { nome, atleta1, atleta2, ct } (dois campos fixos). Os helpers
+// abaixo centralizam essa diferença estrutural num só lugar — foi assim que
+// "trio" entrou como modalidade nova (Ed, 21/09) sem duplicar de novo toda
+// a lógica que já existia pra dupla/quarteto espalhada pelo arquivo.
+function usaListaAtletas(modalidade){ return modalidade === 'quarteto' || modalidade === 'trio'; }
+function modalidadeAtletasSlots(modalidade){ return modalidade === 'quarteto' ? 6 : modalidade === 'trio' ? 3 : 0; }
+function modalidadeNominal(modalidade){ return modalidade === 'quarteto' ? 4 : modalidade === 'trio' ? 3 : 2; }
+function modalidadeParceirosCount(modalidade){ return modalidade === 'quarteto' ? 3 : modalidade === 'trio' ? 2 : 1; }
+function modalidadePlural(modalidade){ return modalidade === 'quarteto' ? 'quartetos' : modalidade === 'trio' ? 'trios' : 'duplas'; }
+function modalidadePluralCap(modalidade){ return modalidade === 'quarteto' ? 'Quartetos' : modalidade === 'trio' ? 'Trios' : 'Duplas'; }
+function modalidadeSingularCap(modalidade){ return modalidade === 'quarteto' ? 'Quarteto' : modalidade === 'trio' ? 'Trio' : 'Dupla'; }
 function emptyTeam(modalidade){
-  if(modalidade === 'quarteto') return { nome:'', atletas:['','','','','',''], ct:'' };
-  return { nome:'', atleta1:'', atleta2:'', ct:'' };
+  const slots = modalidadeAtletasSlots(modalidade);
+  return slots ? { nome:'', atletas:Array(slots).fill(''), ct:'' } : { nome:'', atleta1:'', atleta2:'', ct:'' };
 }
 // Returns the display label for team at index idx, or null if not filled in yet.
 function teamLabel(chave, idx){
   const t = chave.times[idx];
   if(!t) return null;
   if(typeof t === 'string') return t.trim() ? t.trim() : null; // legacy format safety net
-  if(chave.modalidade === 'quarteto'){
+  if(usaListaAtletas(chave.modalidade)){
     return (t.nome && t.nome.trim()) ? t.nome.trim() : null;
   }
   // Dupla também pode ter nome de time (Ed, 21/09: "precisa ser inserido o
@@ -2439,7 +2502,7 @@ function computeRankingCategoriasIsoladas(eventoIds){
 // normalizado, já que o mesmo atleta pode estar em times com "nome" de
 // exibição distintos (ou nenhum) em eventos diferentes.
 function duplaCampeonatoKey(modalidade, time){
-  if(modalidade === 'quarteto'){
+  if(usaListaAtletas(modalidade)){
     const nomes = (time.atletas || []).map(normPersonName).filter(Boolean);
     if(nomes.length) return nomes.slice().sort().join('+');
     return time.nome ? ('NOME:' + normPersonName(time.nome)) : null;
@@ -2494,7 +2557,7 @@ function computeClassificacaoComPontosEKeys(chave){
 // cada time "vira" (uma dupla, um atleta de cada vez, ou o CT do time). ----
 function nomesAtletasDoTime(modalidade, time){
   if(!time) return [];
-  if(modalidade === 'quarteto') return (time.atletas || []).map(s => (s||'').trim()).filter(Boolean);
+  if(usaListaAtletas(modalidade)) return (time.atletas || []).map(s => (s||'').trim()).filter(Boolean);
   return [time.atleta1, time.atleta2].map(s => (s||'').trim()).filter(Boolean);
 }
 function ctDoTime(time){
@@ -3348,6 +3411,7 @@ function route(){
     if(sub === 'inscrever-evento') return renderAtletaEventoInscricaoView(parts[2]);
     if(sub === 'inscrever') return renderAtletaInscricaoForm(parts[2], parts[3]);
     if(sub === 'minhas-inscricoes') return renderAtletaMinhasInscricoes();
+    if(sub === 'pagamento') return renderAtletaPagamentoView(parts[2]);
     if(sub === 'perfil') return renderAtletaPerfil();
     return renderAtletaHome();
   }
@@ -3622,7 +3686,7 @@ function categoriaAbertaParaInscricao(chave){
 // de status/vagas/fechada nos dois lugares, só o botão de ação muda.
 function linhaInscricaoCategoriaHtml(ev, cat, chave, minhas){
   const minha = minhas.find(i => i.categoriaId === cat.id);
-  const vagas = vagasDaCategoria(chave) - (chave.times||[]).length;
+  const vagas = vagasDaCategoria(chave) - (chave.times||[]).filter(t => teamRowHasData(t, chave.modalidade)).length;
   let acao;
   if(minha){
     const stLabel = minha.status === 'pendente' ? '⏳ Pendente' : minha.status === 'aprovada' ? '✅ Inscrito' : '❌ Rejeitada';
@@ -3758,7 +3822,7 @@ function renderAtletaInscricaoForm(eventoId, categoriaId){
   }
   const ehPrimeira = contarInscricoesAtivasNoEvento(_minhasInscricoesCache, eventoId) === 0;
   const preco = precoInscricao(ev, hojeStr(), ehPrimeira);
-  const vagas = vagasDaCategoria(chave) - (chave.times||[]).length;
+  const vagas = vagasDaCategoria(chave) - (chave.times||[]).filter(t => teamRowHasData(t, chave.modalidade)).length;
   if(preco == null){
     app.innerHTML = `${header('Inscrição', escapeHtml(chave.nome), '/atleta/home')}
       <div class="wrap"><div class="empty"><div class="big">🚫</div><div style="font-weight:700;">Inscrições fechadas pra esse evento no momento</div></div></div>`;
@@ -3778,7 +3842,7 @@ function renderAtletaInscricaoForm(eventoId, categoriaId){
     inscricaoFormState = { _categoriaId: categoriaId, _eventoId: eventoId, nomeTime:'', parceiros: ['','',''], parceirosCpf: ['','',''], parceirosUid: [null,null,null], camiseta:'' };
   }
   const s = inscricaoFormState;
-  const parceirosCount = chave.modalidade === 'quarteto' ? 3 : 1;
+  const parceirosCount = modalidadeParceirosCount(chave.modalidade);
   // Busca por CPF (Ed, 18/09: "fazer uma busca pelo CPF do atleta que já
   // está devidamente cadastrado ou cadastrar também o parceiro") — se achar
   // um atleta com esse CPF já cadastrado na plataforma, preenche o nome
@@ -3854,7 +3918,7 @@ function enviarInscricao(eventoId, categoriaId, preco){
   const cat = getCategoria(categoriaId);
   const chave = cat ? getChave(cat.chaveId) : null;
   if(!chave || !s) return;
-  const parceirosCount = chave.modalidade === 'quarteto' ? 3 : 1;
+  const parceirosCount = modalidadeParceirosCount(chave.modalidade);
   const parceiros = (s.parceiros||[]).slice(0, parceirosCount).map(p=>(p||'').trim());
   const parceirosUids = (s.parceirosUid||[]).slice(0, parceirosCount);
   const nomeTime = (s.nomeTime||'').trim();
@@ -3863,13 +3927,65 @@ function enviarInscricao(eventoId, categoriaId, preco){
   criarInscricao({
     atletaUid: _authUser.uid, eventoId, categoriaId, chaveId: chave.id,
     nomeTime, parceiros, parceirosUids, tamanhoCamiseta: s.camiseta || null, valor: preco
-  }).then(() => {
-    toast('Inscrição enviada! Aguarde a aprovação do organizador.');
-    location.hash = '/atleta/minhas-inscricoes';
+  }).then((insc) => {
+    // Ed, 21/09: "preencher todos os dados, e aí gerar a parte de
+    // pagamentos... preciso que seja endereçada essa parte também no
+    // registro das inscrições" — quando tem valor, manda direto pra tela
+    // de pagamento (chave Pix do organizador) em vez de só um toast
+    // genérico dizendo "combinar depois".
+    if(preco > 0){
+      toast('Inscrição enviada!');
+      location.hash = '/atleta/pagamento/' + insc.id;
+    } else {
+      toast('Inscrição enviada! Aguarde a aprovação do organizador.');
+      location.hash = '/atleta/minhas-inscricoes';
+    }
   }).catch(err => {
     console.error('enviarInscricao', err);
     toast('Não deu pra enviar agora — tenta de novo em alguns segundos');
   });
+}
+// Tela de pagamento (Ed, 21/09) — mostra a chave Pix do organizador e o
+// valor devido pra essa inscrição específica. Não tem gateway de verdade
+// (o "QR Pix automático" continua um passo futuro), mas pelo menos endereça
+// a parte que estava faltando: o atleta via só um texto dizendo "o
+// pagamento é combinado depois" sem NENHUM dado de pra onde mandar o Pix,
+// mesmo a chave já estando cadastrada na config do evento. Acessível tanto
+// logo depois de enviar a inscrição quanto de novo depois, a partir de
+// "Minhas inscrições" (ver renderAtletaMinhasInscricoes).
+function renderAtletaPagamentoView(inscricaoId){
+  const insc = getInscricao(inscricaoId);
+  if(!insc){ location.hash = '/atleta/minhas-inscricoes'; return; }
+  const ev = getEvento(insc.eventoId);
+  const cat = getCategoria(insc.categoriaId);
+  const chave = cat ? getChave(cat.chaveId) : null;
+  const pix = (ev && ev.chavePix) ? ev.chavePix.trim() : '';
+  app.innerHTML = `
+    ${header('Pagamento', chave ? escapeHtml(chave.nome) : null, '/atleta/minhas-inscricoes')}
+    <div class="wrap">
+      <div class="card" style="text-align:center;">
+        <div class="hint">Valor da inscrição</div>
+        <div style="font-size:26px; font-weight:800;">R$ ${(insc.valor||0).toFixed(2).replace('.',',')}</div>
+      </div>
+      <div class="card">
+        <div class="card-title">💳 Como pagar</div>
+        ${pix ? `
+        <label>Chave Pix do organizador</label>
+        <div style="display:flex; gap:6px; align-items:center;">
+          <input type="text" readonly value="${escapeHtmlAttr(pix)}" id="pixKeyInput" style="flex:1;">
+          <button class="btn ghost small" style="width:auto; padding:0 14px;" onclick="copiarChavePix()">📋 Copiar</button>
+        </div>
+        <div class="hint" style="margin-top:8px;">Envie o Pix pra essa chave com o valor acima e aguarde — o organizador confirma o pagamento e aprova sua inscrição manualmente.</div>
+        ` : `<div class="hint">O organizador ainda não cadastrou uma chave Pix pra esse evento — combine a forma de pagamento direto com ele.</div>`}
+      </div>
+      <button class="btn" onclick="location.hash='/atleta/minhas-inscricoes'">Ver minhas inscrições</button>
+    </div>`;
+}
+function copiarChavePix(){
+  const el = document.getElementById('pixKeyInput');
+  if(!el) return;
+  el.select();
+  try{ document.execCommand('copy'); toast('Chave Pix copiada'); }catch(e){ toast('Não deu pra copiar — selecione e copie manualmente'); }
 }
 function renderAtletaMinhasInscricoes(){
   const rows = _minhasInscricoesCache.slice().sort((a,b)=>b.criadoEm-a.criadoEm).map(i => {
@@ -3885,6 +4001,7 @@ function renderAtletaMinhasInscricoes(){
         <span class="match-badge ${stCls}">${stLabel}</span>
       </div>
       <div class="hint" style="margin-top:6px;">Valor: R$ ${(i.valor||0).toFixed(2).replace('.',',')}${(i.parceiros||[]).length?(' • Com: '+i.parceiros.map(p=>escapeHtml(p)).join(', ')):''}</div>
+      ${(i.status==='pendente' && (i.valor||0) > 0) ? `<button class="btn ghost small" style="margin-top:6px;" onclick="location.hash='/atleta/pagamento/${i.id}'">💳 Ver dados de pagamento</button>` : ''}
     </div>`;
   }).join('');
   app.innerHTML = `
@@ -3943,8 +4060,8 @@ function aprovarInscricao(id){
   // quando encontrados por CPF.
   const nomeExibicao = (atleta.nomeAtleta||'').trim() || atleta.nome;
   const nomeTimeInsc = (insc.nomeTime||'').trim();
-  const novoTime = chave.modalidade === 'quarteto'
-    ? { nome: nomeTimeInsc, atletas:[nomeExibicao].concat(insc.parceiros||[]).slice(0,6), ct: atleta.ct||'' }
+  const novoTime = usaListaAtletas(chave.modalidade)
+    ? { nome: nomeTimeInsc, atletas:[nomeExibicao].concat(insc.parceiros||[]).slice(0, modalidadeAtletasSlots(chave.modalidade)), ct: atleta.ct||'' }
     : { nome: nomeTimeInsc, atleta1: nomeExibicao, atleta2: (insc.parceiros||[])[0]||'', ct: atleta.ct||'' };
   // Quando a categoria já nasceu com "slots" reservados pro tamanho da
   // chave (linhas em branco, ex.: organizador criou a chave com 8 vagas
@@ -4085,7 +4202,7 @@ function renderEventosHome(){
       ${body}
       <button class="btn accent" style="margin-top:6px;" onclick="location.hash='/novo-evento'">+ Novo evento</button>
       <button class="btn secondary" style="margin-top:8px;" onclick="location.hash='/inscricoes-pendentes'">📋 Inscrições pendentes${_inscricoesCache.filter(i=>i.status==='pendente').length ? ' ('+_inscricoesCache.filter(i=>i.status==='pendente').length+')' : ''}</button>
-      <button class="btn secondary" style="margin-top:8px;" onclick="location.hash='/cts-pendentes'">🏢 CTs pendentes${listaCtsPendentes().length ? ' ('+listaCtsPendentes().length+')' : ''}</button>
+      <button class="btn secondary" style="margin-top:8px;" onclick="location.hash='/cts-pendentes'">🏢 Centros de treinamento${listaCtsPendentes().length ? ' ('+listaCtsPendentes().length+' pendente'+(listaCtsPendentes().length===1?'':'s')+')' : ''}</button>
       <button class="btn secondary" style="margin-top:8px;" onclick="location.hash='/ranking-atletas'">🏅 Ranking de atletas</button>
       <button class="btn ghost" style="margin-top:8px;" onclick="location.hash='/'">👁 Abrir modo público (somente leitura)</button>
     </div>`;
@@ -4570,7 +4687,7 @@ function renderEventoView(eventoId, selectedDia){
       return `<div class="chave-item" onclick="location.hash='/chave/${chave.id}'">
         <div class="info">
           <div class="nome">${escapeHtml(chave.nome)} ${statusBadgeHtml(st)}</div>
-          <div class="meta">${horaTag}${chave.numTimes} ${chave.modalidade==='quarteto'?'quartetos':'duplas'} • ${st.done}/${st.total} jogos</div>
+          <div class="meta">${horaTag}${chave.numTimes} ${modalidadePlural(chave.modalidade)} • ${st.done}/${st.total} jogos</div>
         </div>
         <div class="cat-actions" onclick="event.stopPropagation()">
           <button class="btn ghost small" onclick="renameCategoria('${chave.id}')" title="Renomear">✎</button>
@@ -4791,7 +4908,7 @@ function renderPubEventoView(eventoId){
       <div class="cgi-dia">${horaTag}${formatDiaLabel(cat.data)}</div>
       <div class="cgi-bottom">
         <span class="status-badge ${naoDivulgado?'status-pending':st.cls}">${naoDivulgado?'🔒 Em breve':st.label}</span>
-        <span class="cgi-max">${chave.numTimes} ${chave.modalidade==='quarteto'?'times':'duplas'}</span>
+        <span class="cgi-max">${chave.numTimes} ${modalidadePlural(chave.modalidade)}</span>
       </div>
     </div>`;
   }
@@ -4882,7 +4999,7 @@ function renderPubDiaView(eventoId, data){
     return `<div class="chave-item" onclick="location.hash='/pub/chave/${chave.id}'">
       <div class="info">
         <div class="nome">${escapeHtml(chave.nome)} ${statusBadgeHtml(st)}</div>
-        <div class="meta">${horaTag}${chave.numTimes} ${chave.modalidade==='quarteto'?'quartetos':'duplas'} • ${st.done}/${st.total} jogos</div>
+        <div class="meta">${horaTag}${chave.numTimes} ${modalidadePlural(chave.modalidade)} • ${st.done}/${st.total} jogos</div>
       </div>
     </div>`;
   }).join('') : `<div class="empty"><div class="big">🏐</div><div style="font-weight:700;">Nenhuma categoria nesse dia</div></div>`;
@@ -5017,7 +5134,7 @@ function renderPubChaveView(id){
 
   if(tab === '__ranking__'){
     app.innerHTML = `
-      ${header(escapeHtml(chave.nome), chave.numTimes + ' ' + (chave.modalidade==='quarteto' ? 'quartetos' : 'duplas') + ' • dupla eliminatória', backHash, headerExtra, logoUrl)}
+      ${header(escapeHtml(chave.nome), chave.numTimes + ' ' + (modalidadePlural(chave.modalidade)) + ' • dupla eliminatória', backHash, headerExtra, logoUrl)}
       <div class="wrap-chave">
         <div class="ranking-link" onclick="setPubTab('${id}','todas')">⬅ Voltar à lista de jogos</div>
         ${renderFinalRankingView(chave, fullRanking, total, done)}
@@ -5028,7 +5145,7 @@ function renderPubChaveView(id){
 
   if(getViewMode() === 'atletas'){
     app.innerHTML = `
-      ${header(escapeHtml(chave.nome), chave.numTimes + ' ' + (chave.modalidade==='quarteto' ? 'quartetos' : 'duplas') + ' • dupla eliminatória', backHash, headerExtra, logoUrl)}
+      ${header(escapeHtml(chave.nome), chave.numTimes + ' ' + (modalidadePlural(chave.modalidade)) + ' • dupla eliminatória', backHash, headerExtra, logoUrl)}
       <div class="wrap-chave">
         ${viewToggle}
         ${renderAtletasListHtml(chave)}
@@ -5039,7 +5156,7 @@ function renderPubChaveView(id){
 
   if(getViewMode() === 'arvore'){
     app.innerHTML = `
-      ${header(escapeHtml(chave.nome), chave.numTimes + ' ' + (chave.modalidade==='quarteto' ? 'quartetos' : 'duplas') + ' • dupla eliminatória', backHash, headerExtra, logoUrl)}
+      ${header(escapeHtml(chave.nome), chave.numTimes + ' ' + (modalidadePlural(chave.modalidade)) + ' • dupla eliminatória', backHash, headerExtra, logoUrl)}
       <div class="wrap-chave">
         ${viewToggle}
         ${treeSectionHtml(chave, true)}
@@ -5077,7 +5194,7 @@ function renderPubChaveView(id){
   }).join('');
 
   app.innerHTML = `
-    ${header(escapeHtml(chave.nome), chave.numTimes + ' ' + (chave.modalidade==='quarteto' ? 'quartetos' : 'duplas') + ' • dupla eliminatória', backHash, headerExtra, logoUrl)}
+    ${header(escapeHtml(chave.nome), chave.numTimes + ' ' + (modalidadePlural(chave.modalidade)) + ' • dupla eliminatória', backHash, headerExtra, logoUrl)}
     <div class="wrap-chave">
       ${viewToggle}
       ${rankingLink}
@@ -5090,7 +5207,7 @@ function renderPubChaveView(id){
 
 function teamRowHasData(t, modalidade){
   if(!t) return false;
-  if(modalidade === 'quarteto') return !!(t.nome && t.nome.trim()) || (t.atletas||[]).some(a => a && a.trim());
+  if(usaListaAtletas(modalidade)) return !!(t.nome && t.nome.trim()) || (t.atletas||[]).some(a => a && a.trim());
   return !!(t.nome && t.nome.trim()) || !!(t.atleta1 && t.atleta1.trim()) || !!(t.atleta2 && t.atleta2.trim());
 }
 
@@ -5125,8 +5242,9 @@ function renderSetup(editId, categoriaCtx){
   const modalidadeField = !editing ? `<label>Modalidade</label>
     <div class="fmt-choice">
       <div class="fmt-opt ${s.modalidade==='dupla'?'selected':''}" onclick="setModalidade('dupla')">Dupla<br><span style="font-weight:400;">2 atletas por time</span></div>
+      <div class="fmt-opt ${s.modalidade==='trio'?'selected':''}" onclick="setModalidade('trio')">Trio<br><span style="font-weight:400;">nome do time + 3 atletas</span></div>
       <div class="fmt-opt ${s.modalidade==='quarteto'?'selected':''}" onclick="setModalidade('quarteto')">Quarteto<br><span style="font-weight:400;">nome do time + até 6 atletas</span></div>
-    </div>` : `<div class="hint">Modalidade: <strong>${s.modalidade==='quarteto'?'Quarteto':'Dupla'}</strong> (fixa depois de criada a chave).</div>`;
+    </div>` : `<div class="hint">Modalidade: <strong>${modalidadeSingularCap(s.modalidade)}</strong> (fixa depois de criada a chave).</div>`;
 
   const sizeGrid = SIZES.map(n => `<div class="size-btn ${count===n?'selected':''}" onclick="pickSize(${n})">${n}</div>`).join('');
   const sizeOk = SIZES.includes(count);
@@ -5153,7 +5271,7 @@ function renderSetup(editId, categoriaCtx){
     </div>
     <div class="hint">Pode decidir isso a qualquer momento — inclusive depois de criar a chave.</div>` : '';
 
-  const teamLabel_ = s.modalidade === 'quarteto' ? 'Times' : 'Duplas';
+  const teamLabel_ = usaListaAtletas(s.modalidade) ? 'Times' : 'Duplas';
   const teamRows = s.times.map((t,i) => teamRowHtml(t, i, count, s.modalidade)).join('');
   // Ed, 21/09: no modo "auto" (padrão pra categoria NOVA), essa lista inteira
   // de nome-por-time fica escondida — os times entram sozinhos conforme as
@@ -5172,14 +5290,14 @@ function renderSetup(editId, categoriaCtx){
       <button class="btn ghost small" style="flex:1;" onclick="toggleColarLista()">📋 Colar lista</button>
     </div>
     <input type="file" id="importPlanilhaInput" accept=".csv,.xlsx,.xls" style="display:none;" onchange="onImportPlanilhaSelected(event)">
-    <div class="hint">A planilha substitui a lista de times acima. Uma linha por ${s.modalidade==='quarteto'?'time':'dupla'} — se tiver cabeçalho, procuro colunas como "${s.modalidade==='quarteto'?'Nome do time, Atleta 1...6':'Atleta 1, Atleta 2'}"${true?' e uma coluna "Categoria" (se existir, filtro pelo nome já digitado acima).':''}</div>
+    <div class="hint">A planilha substitui a lista de times acima. Uma linha por ${usaListaAtletas(s.modalidade)?'time':'dupla'} — se tiver cabeçalho, procuro colunas como "${usaListaAtletas(s.modalidade)?('Nome do time, Atleta 1...'+modalidadeAtletasSlots(s.modalidade)):'Atleta 1, Atleta 2'}"${true?' e uma coluna "Categoria" (se existir, filtro pelo nome já digitado acima).':''}</div>
     ${s._pasteOpen ? `
-    <textarea id="colarListaInput" oninput="setupState._pasteText=this.value" style="margin-top:8px;" placeholder="${s.modalidade==='quarteto' ? 'Um time por linha — nome do time, depois cada atleta (nome e sobrenome vale), separados por &#47; ou x:\nTime Alfa / João Silva / Maria Souza / Pedro Lima\nTime Beta x Ana Costa x Bia Rocha' : 'Uma dupla por linha, nomes separados por &#47; ou x:\nSilva / Souza\nCosta x Lima'}">${escapeHtmlAttr(s._pasteText||'')}</textarea>
+    <textarea id="colarListaInput" oninput="setupState._pasteText=this.value" style="margin-top:8px;" placeholder="${usaListaAtletas(s.modalidade) ? (s.modalidade==='trio' ? 'Um time por linha — nome do time, depois cada atleta (nome e sobrenome vale), separados por &#47; ou x:\nTime Alfa / João Silva / Maria Souza / Pedro Lima\nTime Beta x Ana Costa x Bia Rocha' : 'Um time por linha — nome do time, depois cada atleta (nome e sobrenome vale), separados por &#47; ou x:\nTrio Alfa / João Silva / Maria Souza / Pedro Lima\nTrio Beta x Ana Costa x Bia Rocha') : 'Uma dupla por linha, nomes separados por &#47; ou x:\nSilva / Souza\nCosta x Lima'}">${escapeHtmlAttr(s._pasteText||'')}</textarea>
     <div style="display:flex; gap:8px; margin-top:6px;">
       <button class="btn secondary small" style="flex:1;" onclick="processarListaColada()">Processar lista</button>
       <button class="btn ghost small" style="flex:1;" onclick="toggleColarLista()">Cancelar</button>
     </div>
-    <div class="hint">Cole a lista de times de uma vez — não precisa preencher campo por campo. ${s.modalidade==='quarteto' ? 'Cada linha vira um time — primeiro o nome do time, depois os atletas em sequência, todos separados por "/" ou "x" (ex: "Time Alfa / João Silva / Maria Souza"); sem separador, a linha inteira vira só o nome do time.' : 'Cada linha vira uma dupla — separe os dois nomes com "/" ou "x" (ex: "Silva / Souza"); sem separador, o nome inteiro vai pro Atleta 1.'}</div>` : ''}`;
+    <div class="hint">Cole a lista de times de uma vez — não precisa preencher campo por campo. ${usaListaAtletas(s.modalidade) ? 'Cada linha vira um time — primeiro o nome do time, depois os atletas em sequência, todos separados por "/" ou "x" (ex: "Time Alfa / João Silva / Maria Souza"); sem separador, a linha inteira vira só o nome do time.' : 'Cada linha vira uma dupla — separe os dois nomes com "/" ou "x" (ex: "Silva / Souza"); sem separador, o nome inteiro vai pro Atleta 1.'}</div>` : ''}`;
 
   const ctx = s._categoriaCtx;
   const setupBackHash = editing ? chaveBackHash(editing.id) : (ctx ? ('/evento/'+ctx.eventoId+'/'+encodeURIComponent(ctx.data)) : '/organizador');
@@ -5226,10 +5344,11 @@ function renderSetup(editId, categoriaCtx){
     </div>`;
 }
 function teamRowHtml(t, i, total, modalidade){
-  const fields = modalidade === 'quarteto' ? `
+  const nominal = modalidadeNominal(modalidade);
+  const fields = usaListaAtletas(modalidade) ? `
     <input type="text" placeholder="Nome do time" value="${escapeHtmlAttr(t.nome)}" oninput="setupState.times[${i}].nome=this.value" style="margin-bottom:6px;">
     <div style="display:grid; grid-template-columns:1fr 1fr; gap:6px;">
-      ${(t.atletas||[]).map((a,j)=>`<input type="text" placeholder="Atleta ${j+1}${j>=4?' (reserva)':''}" value="${escapeHtmlAttr(a)}" oninput="setupState.times[${i}].atletas[${j}]=this.value">`).join('')}
+      ${(t.atletas||[]).map((a,j)=>`<input type="text" placeholder="Atleta ${j+1}${j>=nominal?' (reserva)':''}" value="${escapeHtmlAttr(a)}" oninput="setupState.times[${i}].atletas[${j}]=this.value">`).join('')}
     </div>` : `
     <input type="text" placeholder="Nome do time (opcional)" value="${escapeHtmlAttr(t.nome)}" oninput="setupState.times[${i}].nome=this.value" style="margin-bottom:6px;">
     <div style="display:flex; gap:6px; margin-bottom:6px;">
@@ -5296,7 +5415,7 @@ function pickSize(n){
 }
 function autoFillTeams(){
   setupState.times.forEach((t,i) => {
-    if(setupState.modalidade === 'quarteto'){
+    if(usaListaAtletas(setupState.modalidade)){
       if(!t.nome || !t.nome.trim()) t.nome = 'Time ' + (i+1);
     } else {
       if(!t.atleta1 || !t.atleta1.trim()) t.atleta1 = 'Atleta ' + (i+1) + 'A';
@@ -5357,9 +5476,10 @@ function parseListaTimes(text, modalidade){
   const linhas = String(text||'').split(/\r?\n/).map(l => l.trim()).filter(l => l);
   return linhas.map(linha => {
     const partes = linha.split(/\s*\/\s*|\s+x\s+/i).map(p => p.trim());
-    if(modalidade === 'quarteto'){
+    if(usaListaAtletas(modalidade)){
       const nome = partes[0] || '';
-      const atletas = [1,2,3,4,5,6].map(j => partes[j] || '');
+      const slots = modalidadeAtletasSlots(modalidade);
+      const atletas = Array.from({length:slots}, (_,j) => partes[j+1] || '');
       return { nome, atletas };
     }
     return { atleta1: partes[0]||'', atleta2: partes[1]||'' };
@@ -5449,11 +5569,13 @@ function personDisplayName(p){
 // forceModalidade não for passado, detecta sozinho: quarteto se algum
 // registro tiver nome de time preenchido ou mais de 2 pessoas na linha.
 function buildTimesFromRows(rows, forceModalidade){
-  const isQuarteto = forceModalidade ? forceModalidade === 'quarteto'
+  const isMulti = forceModalidade ? usaListaAtletas(forceModalidade)
     : rows.some(r => (r.nomeTime && r.nomeTime.trim()) || r.pessoas.length > 2);
+  const modalidadeOut = forceModalidade || (isMulti ? 'quarteto' : 'dupla');
+  const slots = isMulti ? modalidadeAtletasSlots(modalidadeOut) : 0;
   const times = rows.map((r, idx) => {
-    if(isQuarteto){
-      const atletas = [0,1,2,3,4,5].map(j => r.pessoas[j] ? personDisplayName(r.pessoas[j]) : '');
+    if(isMulti){
+      const atletas = Array.from({length:slots}, (_,j) => r.pessoas[j] ? personDisplayName(r.pessoas[j]) : '');
       return { nome: (r.nomeTime && r.nomeTime.trim()) ? r.nomeTime.trim() : ('Time ' + (idx+1)), atletas };
     }
     return {
@@ -5461,7 +5583,7 @@ function buildTimesFromRows(rows, forceModalidade){
       atleta2: r.pessoas[1] ? personDisplayName(r.pessoas[1]) : ''
     };
   });
-  return { modalidade: isQuarteto ? 'quarteto' : 'dupla', times };
+  return { modalidade: modalidadeOut, times };
 }
 // Agrupa os registros pela coluna Categoria (ignorando acento/maiúscula),
 // preservando a primeira grafia encontrada como nome de exibição — é assim
@@ -5503,12 +5625,13 @@ function normPersonName(s){
 // Ed: reconhecer o time pelo nome dos atletas, não pela posição na lista —
 // então uma dupla que só mudou de linha continua sendo "a mesma dupla".
 function teamMatchKey(modalidade, time){
-  const names = modalidade === 'quarteto'
-    ? [0,1,2,3,4,5].map(i => normPersonName((time.atletas||[])[i])).filter(Boolean)
+  const slots = modalidadeAtletasSlots(modalidade);
+  const names = slots
+    ? Array.from({length:slots}, (_,i) => normPersonName((time.atletas||[])[i])).filter(Boolean)
     : [normPersonName(time.atleta1), normPersonName(time.atleta2)].filter(Boolean);
   if(names.length) return names.sort().join('+');
-  // Quarteto sem nenhum atleta preenchido (só nome do time) cai pro nome.
-  return (modalidade === 'quarteto' && (time.nome||'').trim()) ? ('NOME:' + normPersonName(time.nome)) : '';
+  // Trio/quarteto sem nenhum atleta preenchido (só nome do time) cai pro nome.
+  return (slots && (time.nome||'').trim()) ? ('NOME:' + normPersonName(time.nome)) : '';
 }
 // Compara os times já cadastrados numa chave com os que vieram na planilha
 // nova: "novos" (na planilha, não achei entre os cadastrados — entram no
@@ -5524,7 +5647,7 @@ function diffTimes(existingTimes, newTimes, modalidade){
 }
 // Nome pra exibir na prévia da importação (lista de "novos"/"sumidos").
 function timeDisplayName(modalidade, t){
-  if(modalidade === 'quarteto') return (t.nome||'').trim() || (t.atletas||[]).filter(Boolean).join(' / ') || 'Time sem nome';
+  if(usaListaAtletas(modalidade)) return (t.nome||'').trim() || (t.atletas||[]).filter(Boolean).join(' / ') || 'Time sem nome';
   if((t.nome||'').trim()) return t.nome.trim();
   const a1 = (t.atleta1||'').trim(), a2 = (t.atleta2||'').trim();
   return (a1 && a2) ? (a1+' / '+a2) : (a1||a2||'Dupla sem nome');
@@ -5651,7 +5774,7 @@ function renderImportLista(eventoId, dia){
               <input type="checkbox" ${g.incluir?'checked':''} ${tamanhoOk?'':'disabled'} onchange="importListaState.groups[${i}].incluir=this.checked; renderImportLista('${eventoId}','${dia}')" style="width:auto;">
               <span style="flex:1; font-weight:700;">🔁 ${escapeHtml(g.categoria)}</span>
             </label>
-            <div class="hint" style="margin-top:4px;">${totalAtual} → ${totalNovo} ${g.modalidade==='quarteto'?'times':'duplas'} (categoria já cadastrada, data e horário não mudam)</div>
+            <div class="hint" style="margin-top:4px;">${totalAtual} → ${totalNovo} ${modalidadePlural(g.modalidade)} (categoria já cadastrada, data e horário não mudam)</div>
             ${novosHtml}${sumidosHtml}${resetWarning}${tamanhoWarning}
             ${disabledByReset ? `<div class="hint" style="margin-top:6px; color:#a13a3a;">Marque a confirmação acima pra aplicar essa atualização.</div>` : ''}
           </div>`;
@@ -5670,7 +5793,7 @@ function renderImportLista(eventoId, dia){
             <input type="text" value="${escapeHtmlAttr(g.categoria)}" oninput="importListaState.groups[${i}].categoria=this.value" style="flex:1; margin:0;">
           </label>
           <div class="hint" style="margin-top:6px;">
-            ${g.modalidade==='quarteto'?'Quartetos':'Duplas'} • ${g.times.length} time${g.times.length===1?'':'s'} • categoria nova
+            ${modalidadePluralCap(g.modalidade)} • ${g.times.length} time${g.times.length===1?'':'s'} • categoria nova
             ${sizeOk ? '' : ` • <span style="color:#a13a3a; font-weight:600;">⚠️ não bate com um tamanho de chave pronto (${SIZES[0]} a ${SIZES[SIZES.length-1]}) — ajuste o total de times na planilha e importe de novo</span>`}
           </div>
           <div style="display:flex; align-items:center; gap:8px; margin-top:8px;">
@@ -5717,8 +5840,8 @@ function onImportListaCompletaSelected(e){
       // dos atletas pra descobrir só quem é novo, sem duplicar categoria
       // nem mexer na data/horário que já estava definido.
       importListaState.groups = rawGroups.map(g => {
-        const { modalidade: modalidadeSheet, times } = buildTimesFromRows(g.rows);
         const match = findExistingCategoriaByName(importListaState.eventoId, g.categoria);
+        const { modalidade: modalidadeSheet, times } = buildTimesFromRows(g.rows, match ? match.chave.modalidade : undefined);
         if(match){
           const modalidade = match.chave.modalidade; // usa a modalidade já cadastrada, evita duplicar por conta de uma coluna ambígua
           const diff = diffTimes(match.chave.times || [], times, modalidade);
@@ -5892,7 +6015,7 @@ function renderCronogramaPlanner(eventoId, dia, ev, dc, items){
         <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
           <div style="flex:1; min-width:140px;">
             <div style="font-weight:700; font-size:13px;">${escapeHtml(chave.nome)}</div>
-            <div class="hint" style="margin:0;">${chave.numTimes} ${chave.modalidade==='quarteto'?'times':'duplas'} · ${effectiveGames(chave).length} jogos</div>
+            <div class="hint" style="margin:0;">${chave.numTimes} ${modalidadePlural(chave.modalidade)} · ${effectiveGames(chave).length} jogos</div>
           </div>
           <div style="width:78px;">
             <label style="font-size:10px;">Quadras</label>
@@ -7114,7 +7237,7 @@ function renderChaveView(id){
   // (antes ficavam lá embaixo, depois de rolar toda a lista de jogos ou a
   // árvore inteira).
   const topActions = `${disponibilizarCard}${inscricaoConfigCard}<div class="footer-actions" style="margin-bottom:12px;">
-    <button class="btn secondary" onclick="location.hash='/editar/${chave.id}'">Editar ${chave.modalidade==='quarteto'?'times':'duplas'}</button>
+    <button class="btn secondary" onclick="location.hash='/editar/${chave.id}'">Editar ${modalidadePlural(chave.modalidade)}</button>
     <button class="btn ghost" onclick="resetResults('${chave.id}')">Zerar placares</button>
   </div>`;
 
@@ -7139,7 +7262,7 @@ function renderChaveView(id){
       <button class="btn accent small" style="margin-top:8px; width:100%;" onclick="location.hash='/editar/${chave.id}'">📋 Inserir lista de times agora</button>
     </div>`;
     app.innerHTML = `
-      ${header(escapeHtml(chave.nome), chave.numTimes + ' ' + (chave.modalidade==='quarteto' ? 'quartetos' : 'duplas') + ' • dupla eliminatória', backHash, switcher, logoUrl)}
+      ${header(escapeHtml(chave.nome), chave.numTimes + ' ' + (modalidadePlural(chave.modalidade)) + ' • dupla eliminatória', backHash, switcher, logoUrl)}
       <div class="wrap-chave">
         ${topActions}
         ${listaInscritosCardHtml(chave)}
@@ -7150,7 +7273,7 @@ function renderChaveView(id){
 
   if(tab === '__ranking__'){
     app.innerHTML = `
-      ${header(escapeHtml(chave.nome), chave.numTimes + ' ' + (chave.modalidade==='quarteto' ? 'quartetos' : 'duplas') + ' • dupla eliminatória', backHash, `
+      ${header(escapeHtml(chave.nome), chave.numTimes + ' ' + (modalidadePlural(chave.modalidade)) + ' • dupla eliminatória', backHash, `
         ${switcher}
         <div class="progress-bar-wrap"><div class="progress-bar-fill" style="width:${pct}%"></div></div>
       `, logoUrl)}
@@ -7166,7 +7289,7 @@ function renderChaveView(id){
 
   if(getViewMode() === 'atletas'){
     app.innerHTML = `
-      ${header(escapeHtml(chave.nome), chave.numTimes + ' ' + (chave.modalidade==='quarteto' ? 'quartetos' : 'duplas') + ' • dupla eliminatória', backHash, `
+      ${header(escapeHtml(chave.nome), chave.numTimes + ' ' + (modalidadePlural(chave.modalidade)) + ' • dupla eliminatória', backHash, `
         ${switcher}
         <div class="progress-bar-wrap"><div class="progress-bar-fill" style="width:${pct}%"></div></div>
       `, logoUrl)}
@@ -7180,7 +7303,7 @@ function renderChaveView(id){
 
   if(getViewMode() === 'arvore'){
     app.innerHTML = `
-      ${header(escapeHtml(chave.nome), chave.numTimes + ' ' + (chave.modalidade==='quarteto' ? 'quartetos' : 'duplas') + ' • dupla eliminatória', backHash, `
+      ${header(escapeHtml(chave.nome), chave.numTimes + ' ' + (modalidadePlural(chave.modalidade)) + ' • dupla eliminatória', backHash, `
         ${switcher}
         <div class="progress-bar-wrap"><div class="progress-bar-fill" style="width:${pct}%"></div></div>
       `, logoUrl)}
@@ -7221,7 +7344,7 @@ function renderChaveView(id){
   }).join('');
 
   app.innerHTML = `
-    ${header(escapeHtml(chave.nome), chave.numTimes + ' ' + (chave.modalidade==='quarteto' ? 'quartetos' : 'duplas') + ' • dupla eliminatória', backHash, `
+    ${header(escapeHtml(chave.nome), chave.numTimes + ' ' + (modalidadePlural(chave.modalidade)) + ' • dupla eliminatória', backHash, `
       ${switcher}
       <div class="progress-bar-wrap"><div class="progress-bar-fill" style="width:${pct}%"></div></div>
     `, logoUrl)}
@@ -8551,12 +8674,12 @@ function viewToggleHtml(chaveId, readOnly){
 function renderAtletasListHtml(chave){
   const n = chave.times ? chave.times.length : 0;
   if(!n) return `<div class="empty"><div class="big">🧑‍🤝‍🧑</div><div style="font-weight:700;">Nenhum time cadastrado ainda</div></div>`;
-  const isQuarteto = chave.modalidade === 'quarteto';
+  const isMultiNome = usaListaAtletas(chave.modalidade);
   const rows = Array.from({length:n}, (_,i) => {
     const t = chave.times[i] || {};
     const ct = (t.ct||'').trim();
     const ctBadge = ct ? `<span class="ct-badge">${escapeHtml(ct)}</span>` : '';
-    if(isQuarteto){
+    if(isMultiNome){
       const nomeTime = (t.nome||'').trim() || teamLabel(chave, i) || 'A definir';
       const atletas = (t.atletas||[]).map(a=>(a||'').trim()).filter(Boolean);
       return `<div class="atleta-row">
@@ -8584,7 +8707,7 @@ function renderAtletasListHtml(chave){
     </div>`;
   }).join('');
   return `<div class="card">
-    <div class="card-title">Lista de ${isQuarteto ? 'times' : 'duplas'} (ordem do sorteio)</div>
+    <div class="card-title">Lista de ${isMultiNome ? 'times' : 'duplas'} (ordem do sorteio)</div>
     ${rows}
   </div>`;
 }
