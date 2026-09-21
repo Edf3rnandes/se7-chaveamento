@@ -3283,6 +3283,7 @@ function renderSidebarNav(){
   } else if(isAtletaLogado()){
     items.push({ label:'🙋 Minha área', hash:'/atleta/home' });
     items.push({ label:'📝 Minhas inscrições', hash:'/atleta/minhas-inscricoes' });
+    items.push({ label:'✏️ Meus dados', hash:'/atleta/perfil' });
     items.push({ label:'🚪 Sair', action:true, danger:true });
   } else {
     items.push({ label:'🔑 Entrar como organizador', hash:'/organizador' });
@@ -3347,6 +3348,7 @@ function route(){
     if(sub === 'inscrever-evento') return renderAtletaEventoInscricaoView(parts[2]);
     if(sub === 'inscrever') return renderAtletaInscricaoForm(parts[2], parts[3]);
     if(sub === 'minhas-inscricoes') return renderAtletaMinhasInscricoes();
+    if(sub === 'perfil') return renderAtletaPerfil();
     return renderAtletaHome();
   }
 
@@ -3509,6 +3511,77 @@ function doAtletaCadastro(){
     renderAtletaCadastro();
   });
 }
+let atletaPerfilErro = '';
+let atletaPerfilSalvando = false;
+function renderAtletaPerfil(){
+  const p = getMeuAtletaPerfil() || {};
+  const ctAtual = p.ct || '';
+  const ctNaLista = ctAtual && listaCtsConfirmados().includes(ctAtual);
+  app.innerHTML = `
+    ${header('Meus dados', 'Editar cadastro', '/atleta/home')}
+    <div class="wrap">
+      <div class="card">
+        <label>Nome completo</label>
+        <input type="text" id="apNome" placeholder="Seu nome completo" value="${escapeHtmlAttr(p.nome||'')}">
+        <label>Nome de atleta (opcional)</label>
+        <input type="text" id="apNomeAtleta" placeholder="Ex: como você quer aparecer nas listas e chaves" value="${escapeHtmlAttr(p.nomeAtleta||'')}">
+        <div class="hint" style="margin-top:-2px;">Usado nas duplas/chaves depois que a inscrição for aprovada — deixe em branco pra usar seu nome completo mesmo.</div>
+        <label>Data de nascimento</label>
+        <input type="date" id="apNascimento" value="${escapeHtmlAttr(p.dataNascimento||'')}">
+        <div class="hint" style="margin-top:-2px;">Fica só no seu cadastro — nunca aparece no site público.</div>
+        <label>Estado</label>
+        <select id="apEstado">
+          <option value="">Selecionar…</option>
+          ${ESTADOS_BR.map(uf => `<option value="${uf}" ${p.estado===uf?'selected':''}>${uf}</option>`).join('')}
+        </select>
+        <label>CT (centro de treinamento)</label>
+        <select id="apCtSelect" onchange="document.getElementById('apCtOutrosWrap').style.display = (this.value==='__outros__') ? 'block' : 'none';">
+          <option value="">Selecionar…</option>
+          ${listaCtsConfirmados().map(c => `<option value="${escapeHtmlAttr(c)}" ${ctAtual===c?'selected':''}>${escapeHtml(c)}</option>`).join('')}
+          <option value="__outros__" ${ctAtual && !ctNaLista ? 'selected':''}>Outros (meu CT não está na lista)</option>
+        </select>
+        <div id="apCtOutrosWrap" style="display:${ctAtual && !ctNaLista ? 'block':'none'}; margin-top:8px;">
+          <input type="text" id="apCtOutros" placeholder="Digite o nome do seu CT" value="${ctAtual && !ctNaLista ? escapeHtmlAttr(ctAtual) : ''}">
+        </div>
+        <div class="hint" style="margin-top:-2px;">Escolhendo "Outros", o nome digitado entra pendente até o organizador confirmar (tela "CTs pendentes").</div>
+        <label>Telefone/WhatsApp</label>
+        <input type="text" id="apTelefone" placeholder="(83) 99999-9999" value="${escapeHtmlAttr(p.telefone||'')}">
+        <label>CPF</label>
+        <input type="text" id="apCpf" placeholder="Só números" inputmode="numeric" value="${escapeHtmlAttr(p.cpf||'')}">
+        <label>Instagram (opcional)</label>
+        <input type="text" id="apInstagram" placeholder="@seuusuario" autocapitalize="off" autocorrect="off" value="${escapeHtmlAttr(p.instagram||'')}">
+        <div class="hint" style="margin-top:-2px;">E-mail de login: ${escapeHtml(p.email||'—')} (não pode ser alterado aqui).</div>
+        ${atletaPerfilErro ? `<div class="hint" style="color:#c65b4a;">${escapeHtml(atletaPerfilErro)}</div>` : ''}
+      </div>
+      <button class="btn" onclick="doAtletaEditarPerfil()" ${atletaPerfilSalvando?'disabled':''}>${atletaPerfilSalvando?'Salvando…':'Salvar alterações'}</button>
+    </div>`;
+}
+function doAtletaEditarPerfil(){
+  const nome = (document.getElementById('apNome').value||'').trim();
+  const nomeAtleta = (document.getElementById('apNomeAtleta').value||'').trim();
+  const dataNascimento = document.getElementById('apNascimento').value||'';
+  const estado = document.getElementById('apEstado').value||'';
+  const ctSelecionado = document.getElementById('apCtSelect').value||'';
+  const ct = ctSelecionado === '__outros__' ? (document.getElementById('apCtOutros').value||'').trim() : ctSelecionado.trim();
+  const telefone = (document.getElementById('apTelefone').value||'').trim();
+  const cpf = (document.getElementById('apCpf').value||'').replace(/\D/g,'');
+  const instagram = (document.getElementById('apInstagram').value||'').trim().replace(/^@/,'');
+  if(!nome || !dataNascimento || !telefone || !cpf){ atletaPerfilErro = 'Preencha todos os campos.'; renderAtletaPerfil(); return; }
+  if(cpf.length !== 11){ atletaPerfilErro = 'CPF deve ter 11 números.'; renderAtletaPerfil(); return; }
+  atletaPerfilErro = '';
+  atletaPerfilSalvando = true;
+  renderAtletaPerfil();
+  if(ct) garantirCtCadastrado(ct);
+  updateMeuAtletaPerfil({ nome, nomeAtleta, dataNascimento, estado, ct, telefone, cpf, instagram }).then(() => {
+    atletaPerfilSalvando = false;
+    toast('Dados atualizados!');
+    location.hash = '/atleta/home';
+  }).catch(err => {
+    atletaPerfilSalvando = false;
+    atletaPerfilErro = 'Não deu pra salvar agora — tenta de novo.';
+    renderAtletaPerfil();
+  });
+}
 function hojeStr(){ return new Date().toISOString().slice(0,10); }
 // Aberto pra inscrição = publicado + tem pelo menos 1 lote cadastrado + o
 // período de algum lote ainda não terminou (ver hint em renderEventoSetup).
@@ -3564,6 +3637,15 @@ function linhaInscricaoCategoriaHtml(ev, cat, chave, minhas){
   }
   return `<div class="atleta-row"><div class="atleta-nomes" style="flex:1;">${escapeHtml(chave.nome)}</div>${acao}</div>`;
 }
+// Ed, 21/09: "precisa ter uma interface um pouquinho maior e mais robusta
+// na área dos atletas... está muito simplificado e está muito feio" — a
+// home do atleta usava uma lista pelada de linhas de texto (mesma
+// `.card`+`.atleta-row` de sempre) num container travado em 640px, sem
+// nenhuma das fotos/badges/info que a lista pública de eventos já tinha.
+// Agora reaproveita os MESMOS cards ricos de `renderPubEventos` (.evt-grid/
+// .evt-card, com banner, status, preço, tags de categoria) — cada card leva
+// direto pra `renderAtletaEventoInscricaoView`, que por sua vez agora mostra
+// os detalhes completos do evento antes da lista de categorias.
 function renderAtletaHome(){
   const perfil = getMeuAtletaPerfil();
   const sairBtn = `<button class="btn ghost small" style="margin-top:6px; background:rgba(255,255,255,.15); color:#fff; border-color:rgba(255,255,255,.3);" onclick="doLogout()">Sair</button>`;
@@ -3572,20 +3654,46 @@ function renderAtletaHome(){
     return;
   }
   const eventos = eventosAbertosParaInscricao();
-  const minhas = _minhasInscricoesCache;
-  const eventosHtml = eventos.length ? eventos.map(ev => {
+  const body = eventos.length ? `<div class="evt-grid">` + eventos.map(ev => {
+    const dias = diasOfEvento(ev);
+    const periodo = dias.length ? (formatDiaLabel(dias[0]) + (dias.length>1 ? ' – ' + formatDiaLabel(dias[dias.length-1]) : '')) : '';
     const cats = categoriasOfEvento(ev.id);
-    const rows = cats.map(({cat, chave}) => linhaInscricaoCategoriaHtml(ev, cat, chave, minhas)).join('');
-    return `<div class="card">
-      <div class="card-title">${escapeHtml(ev.nome)}${ev.edicao?(' — '+escapeHtml(ev.edicao)):''}</div>
-      ${rows || '<div class="hint">Nenhuma categoria cadastrada ainda</div>'}
+    const banner = ev.fotoUrl ? `<img src="${ev.fotoUrl}">` : `<div class="banner-ph">🏐</div>`;
+    const status = eventoStatusInfo(ev);
+    const lote = loteAtivoHoje(ev);
+    const precoPill = ev.inscricaoGratuita ? `<span class="status-badge price-pill">Gratuito</span>` : (lote ? `<span class="status-badge price-pill">${formatBRL(lote.valor1a)}</span>` : '');
+    const chaves = cats.map(({chave}) => chave.nome);
+    const maxTags = 3;
+    const tagsRow = chaves.length ? `<div class="evt-tags">
+      ${chaves.slice(0, maxTags).map(n => `<span class="evt-tag">${escapeHtml(n)}</span>`).join('')}
+      ${chaves.length > maxTags ? `<span class="evt-tag muted">+${chaves.length - maxTags}</span>` : ''}
+    </div>` : '';
+    return `<div class="evt-card" onclick="location.hash='/atleta/inscrever-evento/${ev.id}'">
+      <div class="banner">
+        ${banner}
+        <span class="status-badge ${status.cls}">${status.label}</span>
+        ${precoPill}
+      </div>
+      <div class="body">
+        <div class="title">${escapeHtml(ev.nome)}${ev.edicao ? ' <span class="edicao">— '+escapeHtml(ev.edicao)+'</span>' : ''}</div>
+        <div class="meta-row">
+          <span>📅 ${escapeHtml(periodo)}</span>
+          ${ev.local ? `<span>📍 ${escapeHtml(ev.local)}</span>` : ''}
+          <span>🏆 ${cats.length} categoria${cats.length===1?'':'s'}</span>
+        </div>
+        ${tagsRow}
+        <div class="cta">Ver evento e se inscrever</div>
+      </div>
     </div>`;
-  }).join('') : `<div class="empty"><div class="big">🗓</div><div style="font-weight:700;">Nenhum evento com inscrição aberta agora</div></div>`;
+  }).join('') + `</div>` : `<div class="empty"><div class="big">🗓</div><div style="font-weight:700;">Nenhum evento com inscrição aberta agora</div></div>`;
   app.innerHTML = `
     ${header('Olá, ' + escapeHtml((perfil.nome||'atleta').split(' ')[0]), 'Área do atleta', null, sairBtn)}
-    <div class="wrap">
-      <button class="btn ghost small" style="margin-bottom:12px;" onclick="location.hash='/atleta/minhas-inscricoes'">📋 Minhas inscrições</button>
-      ${eventosHtml}
+    <div class="wrap-wide">
+      <div style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:14px;">
+        <button class="btn ghost small" style="flex:1;" onclick="location.hash='/atleta/minhas-inscricoes'">📋 Minhas inscrições</button>
+        <button class="btn ghost small" style="flex:1;" onclick="location.hash='/atleta/perfil'">✏️ Meus dados</button>
+      </div>
+      ${body}
     </div>`;
 }
 // Tela de inscrição "dentro do evento" (Ed, 18/09: "as inscrições devem
@@ -3606,13 +3714,30 @@ function renderAtletaEventoInscricaoView(eventoId){
   const cats = categoriasOfEvento(eventoId);
   const minhas = _minhasInscricoesCache;
   const rows = cats.map(({cat, chave}) => linhaInscricaoCategoriaHtml(ev, cat, chave, minhas)).join('');
+  // Ed, 21/09: "precisaria ver a competição inteira, ver os detalhes da
+  // competição para depois se inscrever" — a mesma riqueza de informação da
+  // página pública (banner, período/local, regras, organização) agora
+  // também aparece aqui, pro atleta logado, antes da lista de categorias.
+  const status = eventoStatusInfo(ev);
+  const { banner, metaRow, infoCard, orgCard, regrasCard } = eventoDetalhesBlocosHtml(ev);
   app.innerHTML = `
-    ${header(escapeHtml(ev.nome) + (ev.edicao?(' — '+escapeHtml(ev.edicao)):''), 'Escolha a categoria pra se inscrever', backHash, sairBtn, ev.logoUrl)}
-    <div class="wrap">
+    ${header(escapeHtml(ev.nome) + (ev.edicao?(' — '+escapeHtml(ev.edicao)):''), null, backHash, sairBtn, ev.logoUrl)}
+    ${banner}
+    <div class="wrap-chave">
+      <div class="evt-title-row">
+        <h1>${escapeHtml(ev.nome)}</h1>
+        <span class="status-badge ${status.cls}">${status.label}</span>
+      </div>
+      ${metaRow}
+      ${infoCard}
+      ${orgCard}
+      ${regrasCard}
+      <div class="section-title">🏆 Categorias — escolha pra se inscrever</div>
       <div class="card">
         ${rows || '<div class="hint">Nenhuma categoria cadastrada ainda</div>'}
       </div>
       <button class="btn ghost small" style="margin-top:8px;" onclick="location.hash='/atleta/home'">Ver outros eventos abertos pra inscrição</button>
+      ${sponsorFooterHtml(ev)}
     </div>`;
 }
 let inscricaoFormState = null;
@@ -4598,9 +4723,16 @@ function diaPadraoVisaoGeral(dias){
   const hoje = new Date().toISOString().slice(0,10);
   return dias.includes(hoje) ? hoje : dias[0];
 }
-function renderPubEventoView(eventoId){
-  const ev = getEvento(eventoId);
-  if(!isEventoPublicado(ev)){ location.hash='/'; return; }
+// Blocos de detalhe do evento (banner+preço, período/local, info,
+// organização, regras) — compartilhados entre a página PÚBLICA
+// (renderPubEventoView) e a tela de inscrição do ATLETA logado
+// (renderAtletaEventoInscricaoView). Ed, 21/09: "na área dos atletas
+// precisaria ver a competição inteira, ver os detalhes da competição para
+// depois se inscrever" — antes só o público via essas informações; quem
+// estava logado como atleta caía direto numa lista pelada de categorias,
+// sem data/local/regras/patrocinador nenhum. Extraído aqui pra garantir que
+// as duas telas mostrem exatamente a mesma coisa, sem duplicar manutenção.
+function eventoDetalhesBlocosHtml(ev){
   const loteHoje = loteAtivoHoje(ev);
   const heroPills = ev.inscricaoGratuita ? `<div class="hero-pills">
     <span class="hero-pill">Inscrição gratuita</span>
@@ -4611,33 +4743,21 @@ function renderPubEventoView(eventoId){
     <span class="hero-pill open">Inscrições abertas</span>
   </div>` : '');
   const banner = ev.fotoUrl ? `<div class="evento-hero-wrap"><img class="evento-hero" src="${ev.fotoUrl}">${heroPills}</div>` : (heroPills ? `<div class="evento-hero-wrap noimg">${heroPills}</div>` : '');
-  const status = eventoStatusInfo(ev);
   const periodo = formatPeriodoLong(ev.dataInicio, ev.dataFim);
-  const dias = diasOfEvento(ev);
-  const selectedDia = pubActiveDia[eventoId] || null;
-  const items = selectedDia ? categoriasOfDia(eventoId, selectedDia) : categoriasOfEvento(eventoId);
-  const pubDayTabs = dias.length > 1 ? `<div class="tabs" style="overflow-x:auto; margin-top:2px;">
-    <div class="tab ${!selectedDia?'active':''}" onclick="setPubDia('${eventoId}', null)">Todos</div>
-    ${dias.map(d => `<div class="tab ${d===selectedDia?'active':''}" onclick="setPubDia('${eventoId}','${d}')">${formatDiaLabelFull(d)}</div>`).join('')}
-  </div>` : '';
-
   const metaRow = `<div class="evt-meta-row">
     <span>📅 ${escapeHtml(periodo)}</span>
     ${ev.local ? `<span>📍 ${escapeHtml(ev.local)}</span>` : ''}
   </div>`;
-
   const infoCard = `<div class="card">
     <div class="card-title">🏆 Informações do Evento</div>
     <div class="info-row"><span class="ico">📅</span><div><div class="ir-label">Data do Evento</div><div class="ir-value">${escapeHtml(periodo)}</div></div></div>
     ${ev.local ? `<div class="info-row"><span class="ico">📍</span><div><div class="ir-label">Local</div><div class="ir-value">${escapeHtml(ev.local)}</div></div></div>` : ''}
     <div class="section-note">Acompanhamento pelo site — inscrições e dúvidas direto com o organizador.</div>
   </div>`;
-
   const orgCard = ev.contato ? `<div class="card">
     <div class="card-title">👤 Organização</div>
     <div class="info-row"><span class="ico">📞</span><div><div class="ir-label">Contato</div><div class="ir-value">${escapeHtml(ev.contato)}</div></div></div>
   </div>` : '';
-
   // Regras costuma ser um texto longo (regulamento completo) — pedido do Ed
   // pra não pesar a página principal do evento com tudo isso já aberto:
   // começa recolhido (algumas linhas + degradê) com um "Ler mais" que expande
@@ -4646,6 +4766,20 @@ function renderPubEventoView(eventoId){
     <div class="card-title">📄 Regras do Campeonato</div>
     <div class="regras-text collapsed" id="regrasText" style="white-space:pre-wrap;">${escapeHtml(ev.regras)}</div>
     <div class="regras-toggle" id="regrasToggle" onclick="toggleRegras()">Ler mais ▾</div>
+  </div>` : '';
+  return { banner, metaRow, infoCard, orgCard, regrasCard, periodo };
+}
+function renderPubEventoView(eventoId){
+  const ev = getEvento(eventoId);
+  if(!isEventoPublicado(ev)){ location.hash='/'; return; }
+  const { banner, metaRow, infoCard, orgCard, regrasCard } = eventoDetalhesBlocosHtml(ev);
+  const status = eventoStatusInfo(ev);
+  const dias = diasOfEvento(ev);
+  const selectedDia = pubActiveDia[eventoId] || null;
+  const items = selectedDia ? categoriasOfDia(eventoId, selectedDia) : categoriasOfEvento(eventoId);
+  const pubDayTabs = dias.length > 1 ? `<div class="tabs" style="overflow-x:auto; margin-top:2px;">
+    <div class="tab ${!selectedDia?'active':''}" onclick="setPubDia('${eventoId}', null)">Todos</div>
+    ${dias.map(d => `<div class="tab ${d===selectedDia?'active':''}" onclick="setPubDia('${eventoId}','${d}')">${formatDiaLabelFull(d)}</div>`).join('')}
   </div>` : '';
 
   function catGridItemHtml({cat, chave}){
@@ -6994,11 +7128,22 @@ function renderChaveView(id){
   // organizar/pré-visualizar a chave.
   const realTeamsCount = (chave.times||[]).filter(t => teamRowHasData(t, chave.modalidade)).length;
   if(!chaveamentoVisivel(chave) && realTeamsCount < 2){
+    // Ed, 21/09 (2ª rodada): a opção de já colocar a lista de times na mão
+    // (colar lista, importar planilha, digitar um por um) precisa aparecer
+    // CLARO aqui — não só escondida atrás do botão genérico "Editar duplas"
+    // lá em cima. As duas formas de preencher a categoria ficam lado a lado:
+    // inserir a lista agora, ou esperar as inscrições públicas.
+    const inserirListaCard = `<div class="card" style="margin-top:12px;">
+      <div class="card-title">✍️ Já tem a lista de times?</div>
+      <div class="hint" style="margin-top:-2px;">Cole a lista de uma vez, importe uma planilha ou digite time por time — depois é só lançar os jogos e o ranking normalmente. Ou, se preferir, não faça nada aqui: os times vão entrando sozinhos conforme as inscrições públicas forem aprovadas.</div>
+      <button class="btn accent small" style="margin-top:8px; width:100%;" onclick="location.hash='/editar/${chave.id}'">📋 Inserir lista de times agora</button>
+    </div>`;
     app.innerHTML = `
       ${header(escapeHtml(chave.nome), chave.numTimes + ' ' + (chave.modalidade==='quarteto' ? 'quartetos' : 'duplas') + ' • dupla eliminatória', backHash, switcher, logoUrl)}
       <div class="wrap-chave">
         ${topActions}
         ${listaInscritosCardHtml(chave)}
+        ${inserirListaCard}
       </div>`;
     return;
   }
