@@ -3916,8 +3916,9 @@ function renderAtletaInscricaoForm(eventoId, categoriaId){
     <div class="wrap">
       <div class="card">
         <div class="hint">Titular: <strong>${escapeHtml(perfil.nome||'')}</strong> (CT: ${escapeHtml(perfil.ct||'—')})</div>
+        ${chave.modalidade !== 'dupla' ? `
         <label>Nome do time</label>
-        <input type="text" value="${escapeHtmlAttr(s.nomeTime||'')}" oninput="inscricaoFormState.nomeTime=this.value" placeholder="Como seu time vai aparecer na chave">
+        <input type="text" value="${escapeHtmlAttr(s.nomeTime||'')}" oninput="inscricaoFormState.nomeTime=this.value" placeholder="Como seu time vai aparecer na chave">` : ''}
         ${parceirosHtml}
         ${camisetaHtml}
       </div>
@@ -4002,7 +4003,11 @@ function adicionarAoCarrinho(eventoId, categoriaId){
   const perfil = getMeuAtletaPerfil();
   if(!ev || !chave || !s || !perfil) return;
   const nomeTime = (s.nomeTime||'').trim();
-  if(!nomeTime){ toast('Dê um nome pro seu time'); return; }
+  // Ed, 21/09: "na dupla retire o nome do time" — dupla não pede/exige nome
+  // de time na inscrição (mostra "Fulana / Sicrana" direto, como sempre foi
+  // pro cadastro manual do organizador); trio/quarteto continuam exigindo,
+  // já que ali o time é a identidade principal na chave.
+  if(chave.modalidade !== 'dupla' && !nomeTime){ toast('Dê um nome pro seu time'); return; }
   const parceirosCount = modalidadeParceirosCount(chave.modalidade);
   for(let i=0; i<parceirosCount; i++){
     const encontrado = s.parceirosUid[i];
@@ -4037,17 +4042,21 @@ function removerDoCarrinho(idx){
 function renderAtletaCarrinhoView(){
   const itens = carrinhoAtleta;
   const total = itens.reduce((s,it) => s + (it.valor||0), 0);
-  const rows = itens.map((it,idx) => `<div class="card">
+  const rows = itens.map((it,idx) => {
+    // Sem nome de time (dupla, Ed 21/09), mostra "Fulana / Sicrana" no lugar.
+    const titulo = (it.nomeTime||'').trim() || it.membros.map(m => m.nomeAtleta || m.nome || '—').join(' / ');
+    return `<div class="card">
     <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:8px;">
       <div style="min-width:0;">
-        <div style="font-weight:700;">${escapeHtml(it.nomeTime)}</div>
+        <div style="font-weight:700;">${escapeHtml(titulo)}</div>
         <div class="hint">${escapeHtml(it.categoriaNome)} • ${escapeHtml(it.eventoNome)}</div>
       </div>
       <button class="del-btn" onclick="removerDoCarrinho(${idx})">✕</button>
     </div>
     <div class="hint" style="margin-top:6px;">Com: ${it.membros.slice(1).map(m => escapeHtml(m.nomeAtleta || m.nome || '—')).join(', ') || '—'}</div>
     <div class="hint" style="margin-top:2px; font-weight:700;">${it.valor > 0 ? ('R$ ' + it.valor.toFixed(2).replace('.',',') + (it.ehPrimeira ? '' : ' (2ª+ no evento)')) : 'Gratuita'}</div>
-  </div>`).join('');
+  </div>`;
+  }).join('');
   app.innerHTML = `
     ${header('Carrinho', itens.length ? (itens.length + ' inscri' + (itens.length===1?'ção':'ções')) : null, '/atleta/home')}
     <div class="wrap">
@@ -4143,14 +4152,19 @@ function copiarChavePix(eventoId){
   try{ document.execCommand('copy'); toast('Chave Pix copiada'); }catch(e){ toast('Não deu pra copiar — selecione e copie manualmente'); }
 }
 function renderAtletaMinhasInscricoes(){
+  const perfil = getMeuAtletaPerfil() || {};
+  const nomeExibicaoTitular = (perfil.nomeAtleta||'').trim() || perfil.nome || '';
   const rows = _minhasInscricoesCache.slice().sort((a,b)=>b.criadoEm-a.criadoEm).map(i => {
     const ev = getEvento(i.eventoId); const cat = getCategoria(i.categoriaId); const chave = cat?getChave(cat.chaveId):null;
     const stLabel = i.status==='aprovada'?'✅ Aprovada':(i.status==='rejeitada'?'❌ Rejeitada':'⏳ Pendente');
     const stCls = i.status==='aprovada'?'done':(i.status==='rejeitada'?'rejected':'wait');
+    // Dupla sem nome de time (Ed 21/09): mostra "Titular / Parceiro" no lugar.
+    const duplaFallback = (nomeExibicaoTitular + ((i.parceiros&&i.parceiros[0]) ? (' / '+i.parceiros[0]) : '')).trim();
+    const titulo = (i.nomeTime||'').trim() || duplaFallback || (chave?chave.nome:'—');
     return `<div class="card">
       <div style="display:flex; justify-content:space-between; align-items:center; gap:8px;">
         <div style="min-width:0;">
-          <div style="font-weight:700;">${escapeHtml(i.nomeTime || (chave?chave.nome:'—'))}</div>
+          <div style="font-weight:700;">${escapeHtml(titulo)}</div>
           <div class="hint">${escapeHtml(chave?chave.nome:'—')}${ev?(' • '+escapeHtml(ev.nome)):''}</div>
         </div>
         <span class="match-badge ${stCls}">${stLabel}</span>
