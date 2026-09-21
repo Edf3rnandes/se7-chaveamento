@@ -2669,9 +2669,12 @@ function pontosAcumuladosPorDuplaCategoria(nomeCampeonato, categoriaNome){
 function chaveamentoVisivel(chave){ return !chave || chave.chaveamentoLiberado !== false; }
 // Disponibiliza o chaveamento de uma categoria: define a ordem dos times
 // (sorteio aleatório OU pelos pontos já acumulados no campeonato dessa
-// etapa — as duas opções que o Ed confirmou) e marca liberado. Depois disso
-// não tem como "esconder de novo" pela UI — é uma ação de mão única, igual
-// publicar um evento.
+// etapa — as duas opções que o Ed confirmou) e marca liberado.
+// Ed, 21/09: "preciso que ele tenha o espaço de ocultar, já que a categoria
+// está aberta. não pode aparecer até a gente autorizar" — então isso DEIXOU
+// de ser uma ação de mão única: dá pra ocultar de novo a qualquer momento
+// (ver ocultarChaveamentoNovamente/mostrarChaveamentoNovamente abaixo) sem
+// perder a ordem já sorteada nem os placares já lançados.
 function disponibilizarChaveamento(chaveId, metodo){
   const chave = getChave(chaveId);
   if(!chave) return;
@@ -2701,19 +2704,54 @@ function disponibilizarChaveamento(chaveId, metodo){
   }
   chave.times = novaOrdem;
   chave.chaveamentoLiberado = true;
+  chave.chaveamentoJaSorteado = true;
   updateChave(chave);
   toast('Chaveamento disponibilizado — o público já vê os confrontos');
 }
 function confirmDisponibilizarChaveamento(chaveId, metodo){
   const label = metodo === 'sorteio' ? 'sorteio (ordem aleatória)' : 'ranking da etapa (pontos já acumulados no campeonato)';
-  if(!confirm('Disponibilizar o chaveamento dessa categoria usando ' + label + '? O público passa a ver os confrontos/árvore a partir de agora — não dá pra esconder de novo depois.')) return;
+  if(!confirm('Disponibilizar o chaveamento dessa categoria usando ' + label + '? O público passa a ver os confrontos/árvore a partir de agora.')) return;
   disponibilizarChaveamento(chaveId, metodo);
+}
+// Oculta de novo um chaveamento já disponibilizado (Ed, 21/09) — volta o
+// público/atletas pra tela de "só lista de inscritos", sem apagar a ordem
+// dos times nem os placares já lançados (só fica invisível até mostrar de
+// novo).
+function ocultarChaveamentoNovamente(chaveId){
+  const chave = getChave(chaveId);
+  if(!chave || !chaveamentoVisivel(chave)) return;
+  chave.chaveamentoLiberado = false;
+  updateChave(chave);
+  toast('Chaveamento ocultado de novo — o público volta a ver só a lista de inscritos');
+}
+function confirmOcultarChaveamento(chaveId){
+  if(!confirm('Ocultar o chaveamento dessa categoria de novo? O público e os atletas deixam de ver confrontos/árvore até você disponibilizar de novo — a ordem dos times e os placares já lançados não são apagados.')) return;
+  ocultarChaveamentoNovamente(chaveId);
+}
+// Mostra de novo um chaveamento que já tinha sido sorteado/disponibilizado
+// antes e foi ocultado — MANTÉM a ordem dos times de antes (não sorteia de
+// novo), pra não bagunçar semeadura nem placares já lançados.
+function mostrarChaveamentoNovamente(chaveId){
+  const chave = getChave(chaveId);
+  if(!chave || chaveamentoVisivel(chave)) return;
+  chave.chaveamentoLiberado = true;
+  updateChave(chave);
+  toast('Chaveamento disponibilizado de novo — o público já vê os confrontos');
 }
 // Liga/desliga a inscrição pública de UMA categoria + define vagas/prazo
 // (Ed, 18/09, 6ª rodada). Vagas fica sempre entre 1 e chave.numTimes — o
 // tamanho da chave continua sendo sobre o FORMATO do chaveamento (só um dos
 // SIZES prontos); vagas é sobre quantas inscrições aceitar dentro dele, e
 // pode ficar menor (sobrando posições "a definir"/bye de propósito).
+// Controla se o card "Inscrição pública desta categoria" está mostrando só
+// o resumo (padrão) ou os campos de vagas/prazo pra editar (Ed, 21/09: "está
+// ficando duas informações" — vagas já foi escolhida na criação, então esse
+// card não repete a pergunta, só oferece "Ajustar" pra quem precisa mudar).
+let inscricaoConfigAjustando = {};
+function toggleInscricaoConfigAjuste(chaveId){
+  inscricaoConfigAjustando[chaveId] = !inscricaoConfigAjustando[chaveId];
+  renderChaveView(chaveId);
+}
 function salvarInscricaoConfig(chaveId, abrir){
   const chave = getChave(chaveId);
   if(!chave) return;
@@ -4773,20 +4811,31 @@ function setPubTab(id, tab){ pubActiveTab[id] = tab; renderPubChaveView(id); }
 // mostra quem já está inscrito, sem confrontos, árvore ou lista de atletas
 // por jogo (Ed, 18/09: "anteriormente somente a lista prévia para quem já
 // estiver cadastrado ou registrado na plataforma").
-function renderListaInscritosPreReveal(chave, backHash, logoUrl, sponsorFooter){
+// Card de "lista de inscritos" compartilhado entre a tela pública (antes de
+// divulgar) e a tela do organizador (antes de ter pelo menos 2 times de
+// verdade — ver renderChaveView). Ed, 21/09: "já tem os confrontos meio que
+// definidos" — até ter pelo menos 2 times de verdade, ninguém (nem o
+// organizador) precisa ver um chaveamento com posições vazias tipo "Rank 1 x
+// Rank 2", só a lista de quem já confirmou presença.
+function listaInscritosCardHtml(chave){
   const times = (chave.times||[]).filter(t => teamRowHasData(t, chave.modalidade));
   const rows = times.length ? times.map(t => `<div class="atleta-row">
       <div class="atleta-nomes" style="flex:1;">${escapeHtml(timeDisplayName(chave.modalidade, t) || '—')}</div>
       ${t.ct ? `<span class="hint">${escapeHtml(t.ct)}</span>` : ''}
     </div>`).join('') : `<div class="empty"><div class="big">📋</div><div style="font-weight:700;">Nenhuma inscrição confirmada ainda</div></div>`;
   return `
+    <div class="section-note">⏳ O chaveamento (confrontos/árvore) ainda não aparece — falta ter pelo menos 2 times confirmados. Assim que tiver, dá pra organizar e divulgar.</div>
+    <div class="card">
+      <div class="card-title">👥 Lista de inscritos${times.length ? (' ('+times.length+')') : ''}</div>
+      ${rows}
+    </div>`;
+}
+function renderListaInscritosPreReveal(chave, backHash, logoUrl, sponsorFooter){
+  const times = (chave.times||[]).filter(t => teamRowHasData(t, chave.modalidade));
+  return `
     ${header(escapeHtml(chave.nome), times.length + ' inscrito' + (times.length===1?'':'s') + ' até agora', backHash, '', logoUrl)}
     <div class="wrap-chave">
-      <div class="section-note">⏳ O chaveamento (confrontos/árvore) dessa categoria ainda não foi divulgado pelo organizador. Assim que for divulgado, os jogos aparecem aqui automaticamente.</div>
-      <div class="card">
-        <div class="card-title">👥 Lista de inscritos</div>
-        ${rows}
-      </div>
+      ${listaInscritosCardHtml(chave)}
       ${sponsorFooter}
     </div>`;
 }
@@ -4926,7 +4975,14 @@ function renderSetup(editId, categoriaCtx){
       disputa3: editing.disputa3 !== false,
       horaInicio: (existingCat && existingCat.horaInicio) || '',
       times: JSON.parse(JSON.stringify(editing.times))
-    } : { _editId:null, _categoriaCtx: categoriaCtx||null, nome:'', modalidade:'dupla', formato:'unico', formatoDecisivo:'melhorDe3', disputa3:true, horaInicio:'', times:[] };
+    } : { _editId:null, _categoriaCtx: categoriaCtx||null, nome:'', modalidade:'dupla', formato:'unico', formatoDecisivo:'melhorDe3', disputa3:true, horaInicio:'', times:[],
+      // Ed, 21/09: "não precisaria... clicar na quantidade de times
+      // cadastrados que tem para poder ser gerado... a ideia é deixar
+      // acontecer vindo da quantidade de vagas preenchidas por meio das
+      // inscrições" — categoria NOVA nasce no modo "auto" (só pede vagas,
+      // sem pedir nome de time nenhum); só quem quer digitar/colar os times
+      // na hora liga o modo manual (ver modoTimesField abaixo).
+      _modoTimes: 'auto' };
   }
   if(!editing && categoriaCtx) setupState._categoriaCtx = categoriaCtx;
   const s = setupState;
@@ -4940,9 +4996,20 @@ function renderSetup(editId, categoriaCtx){
 
   const sizeGrid = SIZES.map(n => `<div class="size-btn ${count===n?'selected':''}" onclick="pickSize(${n})">${n}</div>`).join('');
   const sizeOk = SIZES.includes(count);
-  const sizeInfo = count === 0 ? `<div class="hint">Adicione times na lista abaixo, ou toque num número acima para criar as linhas de uma vez.</div>` :
-    sizeOk ? `<div class="hint" style="background:#eaf0fe;border-radius:8px;padding:8px 10px;color:var(--primary-dark);font-weight:600;">✅ ${count} times cadastrados → chave de ${count} equipes</div>` :
-    `<div class="hint" style="background:#f3efe2;border-radius:8px;padding:8px 10px;color:#a68e4f;font-weight:600;">⚠️ ${count} times cadastrados — esse total não corresponde a nenhuma chave pronta (disponível: ${SIZES[0]} a ${SIZES[SIZES.length-1]}). Adicione/remova times para ajustar.</div>`;
+  const modoAuto = !editing && s._modoTimes !== 'manual';
+  const sizeInfo = count === 0 ? `<div class="hint">${modoAuto ? 'Toque num número acima pra definir a quantidade de vagas.' : 'Adicione times na lista abaixo, ou toque num número acima para criar as linhas de uma vez.'}</div>` :
+    sizeOk ? `<div class="hint" style="background:#eaf0fe;border-radius:8px;padding:8px 10px;color:var(--primary-dark);font-weight:600;">✅ ${modoAuto ? (count + ' vagas → chave de ' + count + ' equipes') : (count + ' times cadastrados → chave de ' + count + ' equipes')}</div>` :
+    `<div class="hint" style="background:#f3efe2;border-radius:8px;padding:8px 10px;color:#a68e4f;font-weight:600;">⚠️ ${count} ${modoAuto?'vagas':'times cadastrados'} — esse total não corresponde a nenhuma chave pronta (disponível: ${SIZES[0]} a ${SIZES[SIZES.length-1]}). Ajuste pra um número da lista acima.</div>`;
+  // Ed, 21/09: na criação, o padrão é só perguntar a quantidade de vagas —
+  // sem card de nome por time (R1, R2...) nenhum. Só quem liga esse
+  // interruptor ("vou digitar/colar os times eu mesmo") vê a lista de times
+  // pra preencher/colar na hora; senão os times entram sozinhos conforme as
+  // inscrições forem aprovadas (mesma ideia de "abrir vagas pro público").
+  const modoTimesField = !editing ? `<label>Como vou montar a lista de times?</label>
+    <div class="fmt-choice">
+      <div class="fmt-opt ${modoAuto?'selected':''}" onclick="setModoTimes('auto')">🌐 Abrir vagas pro público se inscrever<br><span style="font-weight:400;">times entram sozinhos conforme aprovo as inscrições</span></div>
+      <div class="fmt-opt ${!modoAuto?'selected':''}" onclick="setModoTimes('manual')">✍️ Vou digitar/colar os times agora<br><span style="font-weight:400;">cadastro já registrado em outro lugar</span></div>
+    </div>` : '';
 
   const isSmallSize = count === 4 || count === 5;
   const disputa3Field = isSmallSize ? `<label>Disputa de 3º lugar</label>
@@ -4954,7 +5021,11 @@ function renderSetup(editId, categoriaCtx){
 
   const teamLabel_ = s.modalidade === 'quarteto' ? 'Times' : 'Duplas';
   const teamRows = s.times.map((t,i) => teamRowHtml(t, i, count, s.modalidade)).join('');
-  const teamFields = `<label>${teamLabel_} (ordem do ranking/sorteio — R1 = cabeça de chave)</label>
+  // Ed, 21/09: no modo "auto" (padrão pra categoria NOVA), essa lista inteira
+  // de nome-por-time fica escondida — os times entram sozinhos conforme as
+  // inscrições públicas são aprovadas. Só aparece quando editando uma chave
+  // já existente, ou quando o organizador liga o modo manual na criação.
+  const teamFields = modoAuto ? `<div class="hint">Ninguém precisa digitar nome nenhum aqui — assim que abrir a categoria, os times vão entrando conforme você aprova as inscrições (tela da categoria, depois de criada). Se preferir, ligue "Vou digitar/colar os times agora" acima.</div>` : `<label>${teamLabel_} (ordem do ranking/sorteio — R1 = cabeça de chave)</label>
     ${teamRows}
     <div style="display:flex; gap:8px; margin-top:6px;">
       <button class="btn secondary small" style="flex:1;" onclick="addTeamRow()">+ Adicionar time</button>
@@ -4994,7 +5065,9 @@ function renderSetup(editId, categoriaCtx){
 
         ${modalidadeField}
 
-        <label>Número de equipes</label>
+        ${modoTimesField}
+
+        <label>Quantidade de vagas</label>
         <div class="size-grid">${sizeGrid}</div>
         ${sizeInfo}
 
@@ -5061,6 +5134,10 @@ function moveTeamRow(idx, dir){
   const j = idx + dir;
   if(j < 0 || j >= arr.length) return;
   const tmp = arr[idx]; arr[idx] = arr[j]; arr[j] = tmp;
+  renderSetup(setupState._editId || '');
+}
+function setModoTimes(m){
+  setupState._modoTimes = m;
   renderSetup(setupState._editId || '');
 }
 function shuffleTeams(){
@@ -6734,7 +6811,12 @@ function saveSetup(editId){
       // nasce FECHADA pra inscrição até o organizador abrir explicitamente
       // (definindo vagas e, se quiser, um prazo) na tela da chave; categorias
       // já existentes (sem esse campo) continuam abertas, sem regressão.
-      inscricaoAberta: false, vagas: null, prazoInscricaoData: null, prazoInscricaoHora: null,
+      // EXCEÇÃO (Ed, 21/09): quem escolhe o modo "abrir vagas pro público se
+      // inscrever" já na criação está explicitamente autorizando a
+      // inscrição ali mesmo — não faz sentido pedir de novo na tela
+      // seguinte, então essa já nasce ABERTA. Modo "vou digitar/colar os
+      // times agora" continua nascendo fechada, como sempre.
+      inscricaoAberta: (s._modoTimes !== 'manual'), vagas: null, prazoInscricaoData: null, prazoInscricaoHora: null,
       criadoEm: Date.now()
     };
     updateChave(c);
@@ -6828,6 +6910,22 @@ function renderChaveView(id){
   const disponibilizarCard = !chaveamentoVisivel(chave) ? (() => {
     const ev = _cat ? getEvento(_cat.eventoId) : null;
     const temCampeonato = !!(ev && (ev.campeonato||'').trim());
+    // Já tinha sido sorteado/disponibilizado antes e foi ocultado de novo —
+    // o botão principal reaparece SEM re-sortear (mantém a ordem e os
+    // placares já lançados); sorteio/ranking do zero fica só como opção
+    // secundária, pra quem realmente quer recomeçar a semeadura.
+    if(chave.chaveamentoJaSorteado){
+      return `<div class="card" style="border:2px dashed var(--primary); background:#eef4ff; margin-bottom:12px;">
+        <div class="card-title">🔒 Chaveamento oculto no momento</div>
+        <div class="hint" style="margin-top:-2px;">O público e os atletas só veem a lista de inscritos até você disponibilizar de novo. A ordem dos times de antes está guardada.</div>
+        <button class="btn accent small" style="margin-top:8px; width:100%;" onclick="mostrarChaveamentoNovamente('${chave.id}')">🔓 Disponibilizar de novo (mantém a ordem)</button>
+        <div class="hint" style="margin-top:8px; margin-bottom:-4px;">Ou recomeçar a ordem do zero:</div>
+        <div style="display:flex; gap:8px; margin-top:6px; flex-wrap:wrap;">
+          <button class="btn ghost small" style="flex:1;" onclick="confirmDisponibilizarChaveamento('${chave.id}','sorteio')">🎲 Sortear de novo</button>
+          <button class="btn ghost small" style="flex:1;" ${temCampeonato?'':'disabled'} onclick="confirmDisponibilizarChaveamento('${chave.id}','ranking')">🏆 Ranking da etapa de novo</button>
+        </div>
+      </div>`;
+    }
     return `<div class="card" style="border:2px dashed var(--primary); background:#eef4ff; margin-bottom:12px;">
       <div class="card-title">🔒 Chaveamento ainda não divulgado</div>
       <div class="hint" style="margin-top:-2px;">O público e os atletas só veem a lista de inscritos até você disponibilizar. Escolha como definir a ordem dos times (R1, R2...):</div>
@@ -6837,19 +6935,34 @@ function renderChaveView(id){
       </div>
       ${!temCampeonato ? `<div class="hint" style="margin-top:6px;">"Ranking da etapa" precisa que o evento tenha um campeonato/circuito definido (edite o evento).</div>` : ''}
     </div>`;
-  })() : '';
+  })() : `<div class="card" style="margin-bottom:12px;">
+    <div class="hint" style="margin-top:-2px;">🔓 Chaveamento disponibilizado — o público já vê confrontos e árvore.</div>
+    <button class="btn ghost small" style="margin-top:6px;" onclick="confirmOcultarChaveamento('${chave.id}')">🔒 Ocultar chaveamento de novo</button>
+  </div>`;
   // Card de inscrição pública desta categoria (Ed, 18/09, 6ª rodada) —
   // interruptor aberta/fechada + vagas (separado do tamanho da chave) +
   // prazo (data/hora, separado dos lotes de preço do evento). Preço em si
   // continua vindo do evento (precoInscricao/lotes), sem mudança aqui.
+  // Ed, 21/09: "está ficando duas informações" — vagas já foi escolhida na
+  // criação da categoria, então esse card não pergunta de novo por padrão;
+  // só mostra o resumo, com um link "Ajustar" pra quem realmente precisa
+  // mudar (reorganizar, dar mais vagas, mudar prazo).
   const inscricaoConfigCard = (() => {
     const aberta = chave.inscricaoAberta !== false;
     const vagasAtual = vagasDaCategoria(chave);
     const inscritos = (chave.times||[]).filter(t => teamRowHasData(t, chave.modalidade)).length;
     const prazoTxt = chave.prazoInscricaoData ? ` • Prazo: ${formatDateLong(chave.prazoInscricaoData)}${chave.prazoInscricaoHora?(' às '+chave.prazoInscricaoHora):''}` : '';
+    const resumo = `<div class="hint" style="margin-top:-2px;">${aberta ? `✅ Aberta — ${inscritos}/${vagasAtual} vagas preenchidas` : '🚫 Fechada'}${prazoTxt}</div>`;
+    if(!inscricaoConfigAjustando[chave.id]){
+      return `<div class="card">
+        <div class="card-title">📝 Inscrição pública desta categoria</div>
+        ${resumo}
+        <button class="btn ghost small" style="margin-top:6px;" onclick="toggleInscricaoConfigAjuste('${chave.id}')">✏️ Ajustar vagas/prazo</button>
+      </div>`;
+    }
     return `<div class="card">
       <div class="card-title">📝 Inscrição pública desta categoria</div>
-      <div class="hint" style="margin-top:-2px;">${aberta ? `✅ Aberta — ${inscritos}/${vagasAtual} vagas preenchidas` : '🚫 Fechada'}${prazoTxt}</div>
+      ${resumo}
       <label>Vagas (até ${chave.numTimes}, o tamanho da chave)</label>
       <input type="number" min="1" max="${chave.numTimes}" id="inscVagas_${chave.id}" value="${vagasAtual}">
       <label>Prazo pra inscrever (opcional, separado do preço)</label>
@@ -6857,7 +6970,10 @@ function renderChaveView(id){
         <input type="date" id="inscPrazoData_${chave.id}" value="${chave.prazoInscricaoData||''}">
         <input type="time" id="inscPrazoHora_${chave.id}" value="${chave.prazoInscricaoHora||''}">
       </div>
-      <button class="btn ${aberta?'ghost':'accent'} small" style="margin-top:8px;" onclick="salvarInscricaoConfig('${chave.id}', ${!aberta})">${aberta?'🚫 Fechar inscrição':'✅ Abrir inscrição'}</button>
+      <div style="display:flex; gap:8px; margin-top:8px;">
+        <button class="btn ${aberta?'ghost':'accent'} small" style="flex:1;" onclick="salvarInscricaoConfig('${chave.id}', ${!aberta})">${aberta?'🚫 Fechar inscrição':'✅ Abrir inscrição'}</button>
+        <button class="btn secondary small" style="flex:1;" onclick="toggleInscricaoConfigAjuste('${chave.id}')">Concluir</button>
+      </div>
     </div>`;
   })();
   // Editar duplas / Zerar placares — movidos pro topo da tela a pedido do Ed
@@ -6867,6 +6983,25 @@ function renderChaveView(id){
     <button class="btn secondary" onclick="location.hash='/editar/${chave.id}'">Editar ${chave.modalidade==='quarteto'?'times':'duplas'}</button>
     <button class="btn ghost" onclick="resetResults('${chave.id}')">Zerar placares</button>
   </div>`;
+
+  // Ed, 21/09: enquanto não tiver pelo menos 2 times de verdade E o
+  // chaveamento ainda não foi divulgado, o organizador vê só a lista de
+  // inscritos (igual o público) em vez de Confrontos/Árvore cheios de
+  // posições vazias tipo "Rank 1 x Rank 2" — evita a sensação de "já tem os
+  // confrontos meio que definidos" quando na real ainda não tem ninguém
+  // inscrito. Uma vez com 2+ times reais, os tabs voltam a aparecer
+  // normalmente (mesmo antes de divulgar pro público), pra quem já quer
+  // organizar/pré-visualizar a chave.
+  const realTeamsCount = (chave.times||[]).filter(t => teamRowHasData(t, chave.modalidade)).length;
+  if(!chaveamentoVisivel(chave) && realTeamsCount < 2){
+    app.innerHTML = `
+      ${header(escapeHtml(chave.nome), chave.numTimes + ' ' + (chave.modalidade==='quarteto' ? 'quartetos' : 'duplas') + ' • dupla eliminatória', backHash, switcher, logoUrl)}
+      <div class="wrap-chave">
+        ${topActions}
+        ${listaInscritosCardHtml(chave)}
+      </div>`;
+    return;
+  }
 
   if(tab === '__ranking__'){
     app.innerHTML = `
