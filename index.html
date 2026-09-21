@@ -67,7 +67,10 @@ button{font-family:inherit;}
   position:sticky; top:0; z-index:20;
   background:linear-gradient(120deg,var(--primary),var(--primary-dark));
   color:#fff;
-  padding:14px 16px calc(14px + env(safe-area-inset-top,0px));
+  /* left reservado pro ícone ☰ do menu lateral, fixo por cima em todo canto
+     superior esquerdo (Ed, 18/09: "quero o menu na lateral esquerda, lá em
+     cima") — sem essa folga o ícone ficaria em cima do botão "‹ voltar". */
+  padding:14px 16px calc(14px + env(safe-area-inset-top,0px)) 64px;
   padding-top:14px;
   box-shadow:0 2px 10px rgba(0,0,0,.12);
 }
@@ -277,11 +280,17 @@ input[type=number]{text-align:center;}
 /* Menu lateral que se esconde (Ed, 18/09) — ícone ☰ fixo, abre uma gaveta
    deslizante da esquerda com fundo escurecido atrás, igual em celular e
    computador (pedido explícito do Ed). z-index acima do sync-banner (60) e
-   do toast (99) pra nunca ficar preso atrás deles. */
+   do toast (99) pra nunca ficar preso atrás deles.
+   Reposicionado (Ed, 18/09, 2ª rodada: "quero o menu na lateral esquerda,
+   lá em cima, não embaixo como está") pro canto superior esquerdo, dentro
+   da folga reservada em `.app-header` acima — fica "encaixado" no cabeçalho
+   de toda tela (sticky, acompanha o scroll junto) em vez de flutuar solto
+   no canto inferior direito. */
 .side-menu-fab{
-  position:fixed; right:16px; bottom:16px; z-index:70; width:52px; height:52px; border-radius:50%;
-  border:none; background:var(--primary); color:#fff; font-size:22px; line-height:1; cursor:pointer;
-  box-shadow:0 4px 14px rgba(20,30,30,.28); display:flex; align-items:center; justify-content:center;
+  position:fixed; left:14px; top:calc(14px + env(safe-area-inset-top,0px)); z-index:70;
+  width:38px; height:38px; border-radius:10px;
+  border:none; background:rgba(255,255,255,.18); color:#fff; font-size:19px; line-height:1; cursor:pointer;
+  display:flex; align-items:center; justify-content:center;
 }
 .side-menu-backdrop{
   position:fixed; inset:0; background:rgba(20,30,30,.45); z-index:110; opacity:0; pointer-events:none;
@@ -1617,6 +1626,13 @@ function categoriaByChaveId(chaveId){ return loadCategorias().find(c => c.chaveI
 //    duas, pra revisar a fila de pendentes com o perfil de quem se inscreveu.
 // Ver HANDOFF_se7_chaveamento.md pro texto exato das regras que isso exige.
 let _meuAtletaPerfil = null;
+// Pra onde mandar o atleta DEPOIS de logar/cadastrar quando ele chegou no
+// login vindo de um link "quero me inscrever nesse evento" (Ed, 18/09:
+// "as inscrições devem aparecer dentro do evento, você colocou fora") — sem
+// isso, todo login caía sempre em /atleta/home (lista genérica de todos os
+// eventos), perdendo o contexto de QUAL evento a pessoa queria. Consumido
+// uma vez só (ver route()) e depois limpo, pra não "grudar" num login futuro.
+let _posLoginRedirectHash = null;
 let _minhasInscricoesCache = [];
 let _minhasInscricoesUnsub = null;
 let _atletasCache = [];
@@ -1930,7 +1946,7 @@ function markSyncPending(delta){
 // ---------- team modality (dupla / quarteto) ----------
 function emptyTeam(modalidade){
   if(modalidade === 'quarteto') return { nome:'', atletas:['','','','','',''], ct:'' };
-  return { atleta1:'', atleta2:'', ct:'' };
+  return { nome:'', atleta1:'', atleta2:'', ct:'' };
 }
 // Returns the display label for team at index idx, or null if not filled in yet.
 function teamLabel(chave, idx){
@@ -1940,6 +1956,10 @@ function teamLabel(chave, idx){
   if(chave.modalidade === 'quarteto'){
     return (t.nome && t.nome.trim()) ? t.nome.trim() : null;
   }
+  // Dupla também pode ter nome de time (Ed, 21/09: "precisa ser inserido o
+  // nome do time" na inscrição) — prefere o nome quando existir, mas cai
+  // pro "Fulana / Sicrana" de sempre pra times antigos sem nome.
+  if(t.nome && t.nome.trim()) return t.nome.trim();
   const a1 = (t.atleta1||'').trim(), a2 = (t.atleta2||'').trim();
   if(a1 && a2) return a1 + ' / ' + a2;
   if(a1) return a1;
@@ -2689,6 +2709,34 @@ function confirmDisponibilizarChaveamento(chaveId, metodo){
   if(!confirm('Disponibilizar o chaveamento dessa categoria usando ' + label + '? O público passa a ver os confrontos/árvore a partir de agora — não dá pra esconder de novo depois.')) return;
   disponibilizarChaveamento(chaveId, metodo);
 }
+// Liga/desliga a inscrição pública de UMA categoria + define vagas/prazo
+// (Ed, 18/09, 6ª rodada). Vagas fica sempre entre 1 e chave.numTimes — o
+// tamanho da chave continua sendo sobre o FORMATO do chaveamento (só um dos
+// SIZES prontos); vagas é sobre quantas inscrições aceitar dentro dele, e
+// pode ficar menor (sobrando posições "a definir"/bye de propósito).
+function salvarInscricaoConfig(chaveId, abrir){
+  const chave = getChave(chaveId);
+  if(!chave) return;
+  if(abrir){
+    const vagasInput = document.getElementById('inscVagas_'+chaveId);
+    const prazoDataInput = document.getElementById('inscPrazoData_'+chaveId);
+    const prazoHoraInput = document.getElementById('inscPrazoHora_'+chaveId);
+    const vagas = parseInt((vagasInput && vagasInput.value) || '', 10);
+    if(!vagas || vagas < 1 || vagas > chave.numTimes){ toast('Vagas precisa ser um número entre 1 e ' + chave.numTimes); return; }
+    const jaInscritos = (chave.times||[]).filter(t => teamRowHasData(t, chave.modalidade)).length;
+    if(vagas < jaInscritos){ toast('Já tem ' + jaInscritos + ' inscritos aprovados — vagas não pode ficar menor que isso'); return; }
+    chave.vagas = vagas;
+    chave.prazoInscricaoData = (prazoDataInput && prazoDataInput.value) || null;
+    chave.prazoInscricaoHora = (prazoHoraInput && prazoHoraInput.value) || null;
+    chave.inscricaoAberta = true;
+    toast('Inscrição aberta pra essa categoria');
+  } else {
+    chave.inscricaoAberta = false;
+    toast('Inscrição fechada pra essa categoria');
+  }
+  updateChave(chave);
+  renderChaveView(chaveId);
+}
 
 // For 4/5 duplas the organizer can skip the 3º/4º dispute (goes straight to the
 // final, 3º/4º decided by group average instead). This returns the game list a
@@ -3252,12 +3300,13 @@ function route(){
   if(isAtletaRoute){
     const sub = parts[1];
     if(!sub || sub === 'login' || sub === 'cadastro'){
-      if(isAtletaLogado()){ location.hash = '/atleta/home'; return; }
+      if(isAtletaLogado()){ const dest = _posLoginRedirectHash || '/atleta/home'; _posLoginRedirectHash = null; location.hash = dest; return; }
       return sub === 'cadastro' ? renderAtletaCadastro() : renderAtletaLogin();
     }
     if(!_authUser) return renderAtletaLogin();
     if(isOrganizador()){ location.hash = '/organizador'; return; } // organizador não tem tela de atleta
     if(sub === 'home') return renderAtletaHome();
+    if(sub === 'inscrever-evento') return renderAtletaEventoInscricaoView(parts[2]);
     if(sub === 'inscrever') return renderAtletaInscricaoForm(parts[2], parts[3]);
     if(sub === 'minhas-inscricoes') return renderAtletaMinhasInscricoes();
     return renderAtletaHome();
@@ -3362,13 +3411,21 @@ function renderAtletaCadastro(){
           ${ESTADOS_BR.map(uf => `<option value="${uf}">${uf}</option>`).join('')}
         </select>
         <label>CT (centro de treinamento)</label>
-        <input type="text" id="acCt" list="ctsExistentesCadastro" placeholder="Ex: Praia Clube">
-        <datalist id="ctsExistentesCadastro">${listaCtsConfirmados().map(c => `<option value="${escapeHtmlAttr(c)}">`).join('')}</datalist>
-        <div class="hint" style="margin-top:-2px;">Se o seu CT não estiver na lista, pode digitar um novo — ele entra pendente até o organizador confirmar.</div>
+        <select id="acCtSelect" onchange="document.getElementById('acCtOutrosWrap').style.display = (this.value==='__outros__') ? 'block' : 'none';">
+          <option value="">Selecionar…</option>
+          ${listaCtsConfirmados().map(c => `<option value="${escapeHtmlAttr(c)}">${escapeHtml(c)}</option>`).join('')}
+          <option value="__outros__">Outros (meu CT não está na lista)</option>
+        </select>
+        <div id="acCtOutrosWrap" style="display:none; margin-top:8px;">
+          <input type="text" id="acCtOutros" placeholder="Digite o nome do seu CT">
+        </div>
+        <div class="hint" style="margin-top:-2px;">Escolhendo "Outros", o nome digitado entra pendente até o organizador confirmar (tela "CTs pendentes").</div>
         <label>Telefone/WhatsApp</label>
         <input type="text" id="acTelefone" placeholder="(83) 99999-9999">
         <label>CPF</label>
         <input type="text" id="acCpf" placeholder="Só números" inputmode="numeric">
+        <label>Instagram (opcional)</label>
+        <input type="text" id="acInstagram" placeholder="@seuusuario" autocapitalize="off" autocorrect="off">
         <label>E-mail</label>
         <input type="email" id="acEmail" placeholder="seuemail@exemplo.com" autocapitalize="off" autocorrect="off">
         <label>Senha</label>
@@ -3383,9 +3440,11 @@ function doAtletaCadastro(){
   const nomeAtleta = (document.getElementById('acNomeAtleta').value||'').trim();
   const dataNascimento = document.getElementById('acNascimento').value||'';
   const estado = document.getElementById('acEstado').value||'';
-  const ct = (document.getElementById('acCt').value||'').trim();
+  const ctSelecionado = document.getElementById('acCtSelect').value||'';
+  const ct = ctSelecionado === '__outros__' ? (document.getElementById('acCtOutros').value||'').trim() : ctSelecionado.trim();
   const telefone = (document.getElementById('acTelefone').value||'').trim();
   const cpf = (document.getElementById('acCpf').value||'').replace(/\D/g,'');
+  const instagram = (document.getElementById('acInstagram').value||'').trim().replace(/^@/,'');
   const email = (document.getElementById('acEmail').value||'').trim();
   const senha = document.getElementById('acSenha').value||'';
   if(!nome || !dataNascimento || !telefone || !cpf || !email || !senha){ atletaCadastroErro = 'Preencha todos os campos.'; renderAtletaCadastro(); return; }
@@ -3401,7 +3460,7 @@ function doAtletaCadastro(){
   // de novo DEPOIS que o .set() abaixo confirma corrige isso sem corrida.
   fbAuth.createUserWithEmailAndPassword(email, senha).then(cred => {
     return fbDb.collection('atletas').doc(cred.user.uid).set({
-      uid: cred.user.uid, email, nome, nomeAtleta, dataNascimento, estado, ct, telefone, cpf, criadoEm: Date.now()
+      uid: cred.user.uid, email, nome, nomeAtleta, dataNascimento, estado, ct, telefone, cpf, instagram, criadoEm: Date.now()
     });
   }).then(() => {
     carregarMeuAtletaPerfil();
@@ -3421,6 +3480,52 @@ function eventosAbertosParaInscricao(){
     ev.inscricaoGratuita === true || ((ev.lotes||[]).length && (ev.lotes||[]).some(l => hoje <= l.fim))
   ));
 }
+// ---------- Inscrição pública por CATEGORIA (Ed, 18/09, 6ª rodada) ----------
+// Preço/prazo de LOTE continuam no nível do EVENTO (sem mudança) — o que
+// muda é que cada categoria (chave) ganha seu PRÓPRIO interruptor de
+// aberta/fechada, sua PRÓPRIA cota de vagas (independente do tamanho da
+// chave/numTimes, que é sobre o FORMATO do chaveamento, não sobre quantas
+// inscrições aceitar) e seu PRÓPRIO prazo (data+hora), separado dos lotes de
+// preço. Ed: "continuar por evento, mas tendo o interruptor de cada
+// categoria, para abrir ou fechar inscrição dela... vagas e tamanho da
+// chave são diferentes... prazo único, separado dos lotes."
+// Categoria SEM o campo `inscricaoAberta` (criada antes dessa funcionalidade)
+// continua aberta, igual sempre foi — só uma categoria NOVA nasce fechada
+// por padrão (ver saveSetup), mesmo padrão já usado em chaveamentoVisivel().
+function vagasDaCategoria(chave){
+  return (chave.vagas != null) ? chave.vagas : chave.numTimes;
+}
+function prazoInscricaoPassou(chave){
+  if(!chave.prazoInscricaoData) return false;
+  const limite = new Date(chave.prazoInscricaoData + 'T' + (chave.prazoInscricaoHora || '23:59') + ':00');
+  return Date.now() > limite.getTime();
+}
+function categoriaAbertaParaInscricao(chave){
+  if(!chave) return false;
+  if(chave.inscricaoAberta === false) return false;
+  if(prazoInscricaoPassou(chave)) return false;
+  return true;
+}
+// Linha de uma categoria dentro da lista de inscrição (usada tanto na home
+// geral do atleta quanto na tela "dentro do evento" abaixo) — mesma lógica
+// de status/vagas/fechada nos dois lugares, só o botão de ação muda.
+function linhaInscricaoCategoriaHtml(ev, cat, chave, minhas){
+  const minha = minhas.find(i => i.categoriaId === cat.id);
+  const vagas = vagasDaCategoria(chave) - (chave.times||[]).length;
+  let acao;
+  if(minha){
+    const stLabel = minha.status === 'pendente' ? '⏳ Pendente' : minha.status === 'aprovada' ? '✅ Inscrito' : '❌ Rejeitada';
+    const stCls = minha.status === 'aprovada' ? 'done' : (minha.status === 'rejeitada' ? 'rejected' : 'wait');
+    acao = `<span class="match-badge ${stCls}">${stLabel}</span>`;
+  } else if(!categoriaAbertaParaInscricao(chave)){
+    acao = `<span class="hint">Fechada</span>`;
+  } else if(vagas <= 0){
+    acao = `<span class="hint">Sem vagas</span>`;
+  } else {
+    acao = `<button class="btn ghost small" onclick="location.hash='/atleta/inscrever/${ev.id}/${cat.id}'">Inscrever-se</button>`;
+  }
+  return `<div class="atleta-row"><div class="atleta-nomes" style="flex:1;">${escapeHtml(chave.nome)}</div>${acao}</div>`;
+}
 function renderAtletaHome(){
   const perfil = getMeuAtletaPerfil();
   const sairBtn = `<button class="btn ghost small" style="margin-top:6px; background:rgba(255,255,255,.15); color:#fff; border-color:rgba(255,255,255,.3);" onclick="doLogout()">Sair</button>`;
@@ -3432,21 +3537,7 @@ function renderAtletaHome(){
   const minhas = _minhasInscricoesCache;
   const eventosHtml = eventos.length ? eventos.map(ev => {
     const cats = categoriasOfEvento(ev.id);
-    const rows = cats.map(({cat, chave}) => {
-      const minha = minhas.find(i => i.categoriaId === cat.id);
-      const vagas = chave.numTimes - (chave.times||[]).length;
-      let acao;
-      if(minha){
-        const stLabel = minha.status === 'pendente' ? '⏳ Pendente' : minha.status === 'aprovada' ? '✅ Inscrito' : '❌ Rejeitada';
-        const stCls = minha.status === 'aprovada' ? 'done' : (minha.status === 'rejeitada' ? 'rejected' : 'wait');
-        acao = `<span class="match-badge ${stCls}">${stLabel}</span>`;
-      } else if(vagas <= 0){
-        acao = `<span class="hint">Sem vagas</span>`;
-      } else {
-        acao = `<button class="btn ghost small" onclick="location.hash='/atleta/inscrever/${ev.id}/${cat.id}'">Inscrever-se</button>`;
-      }
-      return `<div class="atleta-row"><div class="atleta-nomes" style="flex:1;">${escapeHtml(chave.nome)}</div>${acao}</div>`;
-    }).join('');
+    const rows = cats.map(({cat, chave}) => linhaInscricaoCategoriaHtml(ev, cat, chave, minhas)).join('');
     return `<div class="card">
       <div class="card-title">${escapeHtml(ev.nome)}${ev.edicao?(' — '+escapeHtml(ev.edicao)):''}</div>
       ${rows || '<div class="hint">Nenhuma categoria cadastrada ainda</div>'}
@@ -3457,6 +3548,33 @@ function renderAtletaHome(){
     <div class="wrap">
       <button class="btn ghost small" style="margin-bottom:12px;" onclick="location.hash='/atleta/minhas-inscricoes'">📋 Minhas inscrições</button>
       ${eventosHtml}
+    </div>`;
+}
+// Tela de inscrição "dentro do evento" (Ed, 18/09: "as inscrições devem
+// aparecer dentro do evento!! você colocou fora.") — igual à home do
+// atleta, mas filtrada num evento só, alcançada direto do botão "Quero me
+// inscrever" na página pública do evento (ver irInscreverNoEvento), sem
+// precisar navegar pela lista geral de todos os eventos abertos.
+function renderAtletaEventoInscricaoView(eventoId){
+  const perfil = getMeuAtletaPerfil();
+  const sairBtn = `<button class="btn ghost small" style="margin-top:6px; background:rgba(255,255,255,.15); color:#fff; border-color:rgba(255,255,255,.3);" onclick="doLogout()">Sair</button>`;
+  const ev = getEvento(eventoId);
+  if(!ev){ location.hash = '/atleta/home'; return; }
+  if(!perfil){
+    app.innerHTML = `${header('Inscrição', 'Carregando seu perfil…', null, sairBtn)}<div class="wrap"><div class="empty"><div class="big">⏳</div></div></div>`;
+    return;
+  }
+  const backHash = isEventoPublicado(ev) ? ('/pub/evento/'+eventoId) : '/atleta/home';
+  const cats = categoriasOfEvento(eventoId);
+  const minhas = _minhasInscricoesCache;
+  const rows = cats.map(({cat, chave}) => linhaInscricaoCategoriaHtml(ev, cat, chave, minhas)).join('');
+  app.innerHTML = `
+    ${header(escapeHtml(ev.nome) + (ev.edicao?(' — '+escapeHtml(ev.edicao)):''), 'Escolha a categoria pra se inscrever', backHash, sairBtn, ev.logoUrl)}
+    <div class="wrap">
+      <div class="card">
+        ${rows || '<div class="hint">Nenhuma categoria cadastrada ainda</div>'}
+      </div>
+      <button class="btn ghost small" style="margin-top:8px;" onclick="location.hash='/atleta/home'">Ver outros eventos abertos pra inscrição</button>
     </div>`;
 }
 let inscricaoFormState = null;
@@ -3477,10 +3595,15 @@ function renderAtletaInscricaoForm(eventoId, categoriaId){
   }
   const ehPrimeira = contarInscricoesAtivasNoEvento(_minhasInscricoesCache, eventoId) === 0;
   const preco = precoInscricao(ev, hojeStr(), ehPrimeira);
-  const vagas = chave.numTimes - (chave.times||[]).length;
+  const vagas = vagasDaCategoria(chave) - (chave.times||[]).length;
   if(preco == null){
     app.innerHTML = `${header('Inscrição', escapeHtml(chave.nome), '/atleta/home')}
       <div class="wrap"><div class="empty"><div class="big">🚫</div><div style="font-weight:700;">Inscrições fechadas pra esse evento no momento</div></div></div>`;
+    return;
+  }
+  if(!categoriaAbertaParaInscricao(chave)){
+    app.innerHTML = `${header('Inscrição', escapeHtml(chave.nome), '/atleta/home')}
+      <div class="wrap"><div class="empty"><div class="big">🚫</div><div style="font-weight:700;">Inscrições fechadas pra essa categoria</div>${chave.prazoInscricaoData ? `<div style="font-size:13px; margin-top:4px;">Prazo era ${formatDateLong(chave.prazoInscricaoData)}${chave.prazoInscricaoHora?(' às '+chave.prazoInscricaoHora):''}</div>` : ''}</div></div>`;
     return;
   }
   if(vagas <= 0){
@@ -3489,7 +3612,7 @@ function renderAtletaInscricaoForm(eventoId, categoriaId){
     return;
   }
   if(!inscricaoFormState || inscricaoFormState._categoriaId !== categoriaId){
-    inscricaoFormState = { _categoriaId: categoriaId, _eventoId: eventoId, parceiros: ['','',''], parceirosCpf: ['','',''], parceirosUid: [null,null,null], camiseta:'' };
+    inscricaoFormState = { _categoriaId: categoriaId, _eventoId: eventoId, nomeTime:'', parceiros: ['','',''], parceirosCpf: ['','',''], parceirosUid: [null,null,null], camiseta:'' };
   }
   const s = inscricaoFormState;
   const parceirosCount = chave.modalidade === 'quarteto' ? 3 : 1;
@@ -3527,6 +3650,8 @@ function renderAtletaInscricaoForm(eventoId, categoriaId){
     <div class="wrap">
       <div class="card">
         <div class="hint">Titular: <strong>${escapeHtml(perfil.nome||'')}</strong> (CT: ${escapeHtml(perfil.ct||'—')})</div>
+        <label>Nome do time</label>
+        <input type="text" value="${escapeHtmlAttr(s.nomeTime||'')}" oninput="inscricaoFormState.nomeTime=this.value" placeholder="Como seu time vai aparecer na chave">
         ${parceirosHtml}
         ${camisetaHtml}
       </div>
@@ -3569,10 +3694,12 @@ function enviarInscricao(eventoId, categoriaId, preco){
   const parceirosCount = chave.modalidade === 'quarteto' ? 3 : 1;
   const parceiros = (s.parceiros||[]).slice(0, parceirosCount).map(p=>(p||'').trim());
   const parceirosUids = (s.parceirosUid||[]).slice(0, parceirosCount);
+  const nomeTime = (s.nomeTime||'').trim();
+  if(!nomeTime){ toast('Dê um nome pro seu time'); return; }
   if(parceiros.some(p => !p)){ toast('Preencha o nome de todos os parceiros'); return; }
   criarInscricao({
     atletaUid: _authUser.uid, eventoId, categoriaId, chaveId: chave.id,
-    parceiros, parceirosUids, tamanhoCamiseta: s.camiseta || null, valor: preco
+    nomeTime, parceiros, parceirosUids, tamanhoCamiseta: s.camiseta || null, valor: preco
   }).then(() => {
     toast('Inscrição enviada! Aguarde a aprovação do organizador.');
     location.hash = '/atleta/minhas-inscricoes';
@@ -3589,8 +3716,8 @@ function renderAtletaMinhasInscricoes(){
     return `<div class="card">
       <div style="display:flex; justify-content:space-between; align-items:center; gap:8px;">
         <div style="min-width:0;">
-          <div style="font-weight:700;">${escapeHtml(chave?chave.nome:'—')}</div>
-          <div class="hint">${escapeHtml(ev?ev.nome:'—')}</div>
+          <div style="font-weight:700;">${escapeHtml(i.nomeTime || (chave?chave.nome:'—'))}</div>
+          <div class="hint">${escapeHtml(chave?chave.nome:'—')}${ev?(' • '+escapeHtml(ev.nome)):''}</div>
         </div>
         <span class="match-badge ${stCls}">${stLabel}</span>
       </div>
@@ -3612,7 +3739,9 @@ function renderInscricoesPendentesView(){
     return `<div class="card">
       <div style="font-weight:800; font-size:15.5px;">${escapeHtml(atleta.nome||'—')}${atleta.nomeAtleta ? (' <span style="font-weight:400; color:var(--muted2);">('+escapeHtml(atleta.nomeAtleta)+')</span>') : ''}</div>
       <div class="hint">CT: ${escapeHtml(atleta.ct||'—')} • Estado: ${escapeHtml(atleta.estado||'—')} • Tel: ${escapeHtml(atleta.telefone||'—')} • CPF: ${escapeHtml(atleta.cpf||'—')}</div>
+      ${atleta.instagram ? `<div class="hint">Instagram: <a href="https://instagram.com/${escapeHtmlAttr(atleta.instagram)}" target="_blank" rel="noopener">@${escapeHtml(atleta.instagram)}</a></div>` : ''}
       <div class="hint" style="margin-top:4px;">Categoria: <strong>${escapeHtml(chave.nome)}</strong> (${escapeHtml(ev.nome)})</div>
+      ${i.nomeTime ? `<div class="hint">Nome do time: <strong>${escapeHtml(i.nomeTime)}</strong></div>` : ''}
       ${(i.parceiros||[]).length ? `<div class="hint">Com: ${i.parceiros.map(p=>escapeHtml(p)).join(', ')}</div>` : ''}
       ${i.tamanhoCamiseta ? `<div class="hint">Camiseta: ${escapeHtml(i.tamanhoCamiseta)}</div>` : ''}
       <div class="hint" style="margin-top:4px; font-weight:700;">Valor: R$ ${(i.valor||0).toFixed(2).replace('.',',')}</div>
@@ -3650,12 +3779,29 @@ function aprovarInscricao(id){
   // enviarInscricao/buscarParceiroPorCpf) e já usam o nome preferido deles
   // quando encontrados por CPF.
   const nomeExibicao = (atleta.nomeAtleta||'').trim() || atleta.nome;
+  const nomeTimeInsc = (insc.nomeTime||'').trim();
   const novoTime = chave.modalidade === 'quarteto'
-    ? { nome:'', atletas:[nomeExibicao].concat(insc.parceiros||[]).slice(0,6), ct: atleta.ct||'' }
-    : { atleta1: nomeExibicao, atleta2: (insc.parceiros||[])[0]||'', ct: atleta.ct||'' };
-  const novoTimes = (chave.times||[]).concat([novoTime]);
-  if(novoTimes.length > chave.numTimes){
-    toast('Essa categoria já está com todas as ' + chave.numTimes + ' vagas preenchidas — ajuste manualmente em "Editar chave" se quiser abrir mais');
+    ? { nome: nomeTimeInsc, atletas:[nomeExibicao].concat(insc.parceiros||[]).slice(0,6), ct: atleta.ct||'' }
+    : { nome: nomeTimeInsc, atleta1: nomeExibicao, atleta2: (insc.parceiros||[])[0]||'', ct: atleta.ct||'' };
+  // Quando a categoria já nasceu com "slots" reservados pro tamanho da
+  // chave (linhas em branco, ex.: organizador criou a chave com 8 vagas
+  // pra preencher via inscrição pública), a aprovação preenche o primeiro
+  // slot vazio em vez de crescer o array — senão o array passaria do
+  // numTimes e o próprio chaveamento ficaria com mais times que o formato
+  // suporta. Categorias "antigas" com times:[] (sem slots reservados)
+  // continuam simplesmente crescendo um por um, como sempre foi.
+  const timesAtuais = chave.times || [];
+  const slotVazioIdx = timesAtuais.findIndex(t => !teamRowHasData(t, chave.modalidade));
+  const novoTimes = slotVazioIdx >= 0
+    ? timesAtuais.map((t,i) => i === slotVazioIdx ? novoTime : t)
+    : timesAtuais.concat([novoTime]);
+  const vagas = vagasDaCategoria(chave);
+  // Conta TIMES DE VERDADE (não o tamanho do array, que já pode incluir
+  // slots em branco reservados pro tamanho da chave) — senão uma categoria
+  // criada com N slots vazios nunca deixaria aprovar nenhuma inscrição.
+  const timesReaisDepois = novoTimes.filter(t => teamRowHasData(t, chave.modalidade)).length;
+  if(timesReaisDepois > vagas){
+    toast('Essa categoria já está com todas as ' + vagas + ' vagas preenchidas — abra mais vagas na tela da chave, ou ajuste manualmente em "Editar chave"');
     return;
   }
   const temPlacar = Object.keys(chave.resultados||{}).length > 0;
@@ -4394,13 +4540,7 @@ function renderPubEventos(){
   }
   app.innerHTML = `
     ${menuBgLayerHtml()}
-    ${header('SE7 Vôlei de Praia - Eventos', 'Acompanhe o chaveamento ao vivo', null, `
-      <div style="display:flex; gap:8px; flex-wrap:wrap; margin-top:8px;">
-        <button class="btn" style="width:auto; padding:8px 14px; font-size:12.5px; font-weight:700; background:rgba(255,255,255,.92); color:var(--primary-dark); border:1.5px solid rgba(255,255,255,.6);" onclick="location.hash='/pub/ranking'">🏅 Ranking</button>
-        <button class="btn" style="width:auto; padding:8px 14px; font-size:12.5px; font-weight:700; background:rgba(255,255,255,.92); color:var(--primary-dark); border:1.5px solid rgba(255,255,255,.6);" onclick="location.hash='/organizador'">🔑 Entrar como organizador</button>
-        <button class="btn" style="width:auto; padding:8px 14px; font-size:12.5px; font-weight:700; background:rgba(255,255,255,.92); color:var(--primary-dark); border:1.5px solid rgba(255,255,255,.6);" onclick="location.hash='/atleta/login'">🏐 Sou atleta, quero me inscrever</button>
-      </div>
-    `)}
+    ${header('SE7 Vôlei de Praia - Eventos', 'Acompanhe o chaveamento ao vivo', null)}
     <div class="wrap-wide">
       <input type="text" placeholder="Buscar evento…" value="${escapeHtmlAttr(pubSearchQuery)}" oninput="pubSearchQuery=this.value; renderPubEventos()" style="margin-bottom:12px; max-width:420px;">
       ${body}
@@ -4499,6 +4639,23 @@ function renderPubEventoView(eventoId){
     catGrid = `<div class="cat-grid">${items.map(catGridItemHtml).join('')}</div>`;
   }
 
+  // Botão de inscrição (Ed, 18/09: "faltando o botão para se inscrever") —
+  // só aparece quando o evento está realmente aberto pra inscrição pelo
+  // site (mesma checagem usada em /atleta/home). Manda pro login do atleta
+  // se ninguém estiver logado, ou direto pra home do atleta (que já lista
+  // esse evento e suas categorias) se já estiver logado como atleta.
+  const inscreverBtn = eventosAbertosParaInscricao().some(e => e.id === ev.id)
+    ? `<button class="btn accent" style="margin:0 0 8px; width:100%;" onclick="irInscreverNoEvento('${ev.id}')">📝 Quero me inscrever nesse evento</button>` : '';
+  // Botões de ação (Ver categorias/Visão geral/Pódio/Ranking da etapa) —
+  // movidos pra DEPOIS dos cards de informação (Ed, 18/09: "podem aparecer
+  // abaixo das informações do evento, da etapa") — antes ficavam logo no
+  // topo, empurrando as informações do evento pra baixo da dobra.
+  const acoesRow = `
+      ${inscreverBtn}
+      <button class="btn accent" style="margin:0 0 8px;" onclick="document.getElementById('categoriasSection').scrollIntoView({behavior:'smooth'})">🏆 Ver categorias</button>
+      ${dias.length ? `<button class="btn ghost" style="margin:0 0 8px; width:100%;" onclick="location.hash='/pub/visao-geral/${ev.id}/'+encodeURIComponent('${diaPadraoVisaoGeral(dias)}')">📋 Visão geral ao vivo</button>` : ''}
+      <button class="btn ghost" style="margin:0 0 8px;" onclick="location.hash='/pub/podio/${ev.id}'">🏆 Pódio geral</button>
+      <button class="btn ghost" style="margin:0 0 8px;" onclick="location.hash='/pub/ranking-etapa/${ev.id}'">📊 Ranking da etapa (por atleta/CT/dupla)</button>`;
   app.innerHTML = `
     ${header(escapeHtml(ev.nome) + (ev.edicao ? ' <span class="header-edicao">— '+escapeHtml(ev.edicao)+'</span>' : ''), null, '/', '', ev.logoUrl)}
     ${banner}
@@ -4508,19 +4665,30 @@ function renderPubEventoView(eventoId){
         <span class="status-badge ${status.cls}">${status.label}</span>
       </div>
       ${metaRow}
-      <button class="btn accent" style="margin:12px 0 8px;" onclick="document.getElementById('categoriasSection').scrollIntoView({behavior:'smooth'})">🏆 Ver categorias</button>
-      ${dias.length ? `<button class="btn accent" style="margin:0 0 8px; width:100%;" onclick="location.hash='/pub/visao-geral/${ev.id}/'+encodeURIComponent('${diaPadraoVisaoGeral(dias)}')">📋 Visão geral ao vivo</button>` : ''}
-      <button class="btn ghost" style="margin:0 0 8px;" onclick="location.hash='/pub/podio/${ev.id}'">🏆 Pódio geral</button>
-      <button class="btn ghost" style="margin:0 0 16px;" onclick="location.hash='/pub/ranking-etapa/${ev.id}'">📊 Ranking da etapa (por atleta/CT/dupla)</button>
       ${infoCard}
       ${orgCard}
       ${regrasCard}
+      ${acoesRow}
       <div id="categoriasSection" class="section-title">🏆 Categorias</div>
       ${pubDayTabs}
       ${catGrid}
       <button class="btn ghost" style="margin-top:14px;" onclick="location.hash='/'">‹ Todos os eventos</button>
       ${sponsorFooterHtml(ev)}
     </div>`;
+}
+// Atalho de inscrição a partir da página pública do evento (Ed, 18/09:
+// "as inscrições devem aparecer dentro do evento, você colocou fora") — se
+// já tiver logado como atleta, manda DIRETO pra tela de inscrição desse
+// evento específico (não a lista genérica de todos os eventos); sem login,
+// manda pro login/cadastro de atleta e GUARDA esse evento como destino pra
+// voltar automaticamente assim que o login/cadastro terminar (ver route()).
+function irInscreverNoEvento(eventoId){
+  if(isAtletaLogado()){
+    location.hash = '/atleta/inscrever-evento/' + eventoId;
+  } else {
+    _posLoginRedirectHash = '/atleta/inscrever-evento/' + eventoId;
+    location.hash = '/atleta/login';
+  }
 }
 // Alterna entre "Categorias" e "Visão geral" nas telas públicas de um dia —
 // pedido do Ed (22/08/2026): a Visão Geral ao vivo vira uma ABA do dia pro
@@ -4740,7 +4908,7 @@ function renderPubChaveView(id){
 function teamRowHasData(t, modalidade){
   if(!t) return false;
   if(modalidade === 'quarteto') return !!(t.nome && t.nome.trim()) || (t.atletas||[]).some(a => a && a.trim());
-  return !!(t.atleta1 && t.atleta1.trim()) || !!(t.atleta2 && t.atleta2.trim());
+  return !!(t.nome && t.nome.trim()) || !!(t.atleta1 && t.atleta1.trim()) || !!(t.atleta2 && t.atleta2.trim());
 }
 
 let setupState = null;
@@ -4856,6 +5024,7 @@ function teamRowHtml(t, i, total, modalidade){
     <div style="display:grid; grid-template-columns:1fr 1fr; gap:6px;">
       ${(t.atletas||[]).map((a,j)=>`<input type="text" placeholder="Atleta ${j+1}${j>=4?' (reserva)':''}" value="${escapeHtmlAttr(a)}" oninput="setupState.times[${i}].atletas[${j}]=this.value">`).join('')}
     </div>` : `
+    <input type="text" placeholder="Nome do time (opcional)" value="${escapeHtmlAttr(t.nome)}" oninput="setupState.times[${i}].nome=this.value" style="margin-bottom:6px;">
     <div style="display:flex; gap:6px; margin-bottom:6px;">
       <input type="text" placeholder="Atleta 1" value="${escapeHtmlAttr(t.atleta1)}" oninput="setupState.times[${i}].atleta1=this.value">
       <input type="text" placeholder="Atleta 2" value="${escapeHtmlAttr(t.atleta2)}" oninput="setupState.times[${i}].atleta2=this.value">
@@ -5145,6 +5314,7 @@ function diffTimes(existingTimes, newTimes, modalidade){
 // Nome pra exibir na prévia da importação (lista de "novos"/"sumidos").
 function timeDisplayName(modalidade, t){
   if(modalidade === 'quarteto') return (t.nome||'').trim() || (t.atletas||[]).filter(Boolean).join(' / ') || 'Time sem nome';
+  if((t.nome||'').trim()) return t.nome.trim();
   const a1 = (t.atleta1||'').trim(), a2 = (t.atleta2||'').trim();
   return (a1 && a2) ? (a1+' / '+a2) : (a1||a2||'Dupla sem nome');
 }
@@ -6560,6 +6730,11 @@ function saveSetup(editId){
       // organizador clicar em "disponibilizar" (ver chaveamentoVisivel acima)
       // — categorias já existentes (sem esse campo) continuam visíveis.
       chaveamentoLiberado: false,
+      // Idem pra inscrição pública (Ed, 18/09, 6ª rodada) — categoria nova
+      // nasce FECHADA pra inscrição até o organizador abrir explicitamente
+      // (definindo vagas e, se quiser, um prazo) na tela da chave; categorias
+      // já existentes (sem esse campo) continuam abertas, sem regressão.
+      inscricaoAberta: false, vagas: null, prazoInscricaoData: null, prazoInscricaoHora: null,
       criadoEm: Date.now()
     };
     updateChave(c);
@@ -6663,10 +6838,32 @@ function renderChaveView(id){
       ${!temCampeonato ? `<div class="hint" style="margin-top:6px;">"Ranking da etapa" precisa que o evento tenha um campeonato/circuito definido (edite o evento).</div>` : ''}
     </div>`;
   })() : '';
+  // Card de inscrição pública desta categoria (Ed, 18/09, 6ª rodada) —
+  // interruptor aberta/fechada + vagas (separado do tamanho da chave) +
+  // prazo (data/hora, separado dos lotes de preço do evento). Preço em si
+  // continua vindo do evento (precoInscricao/lotes), sem mudança aqui.
+  const inscricaoConfigCard = (() => {
+    const aberta = chave.inscricaoAberta !== false;
+    const vagasAtual = vagasDaCategoria(chave);
+    const inscritos = (chave.times||[]).filter(t => teamRowHasData(t, chave.modalidade)).length;
+    const prazoTxt = chave.prazoInscricaoData ? ` • Prazo: ${formatDateLong(chave.prazoInscricaoData)}${chave.prazoInscricaoHora?(' às '+chave.prazoInscricaoHora):''}` : '';
+    return `<div class="card">
+      <div class="card-title">📝 Inscrição pública desta categoria</div>
+      <div class="hint" style="margin-top:-2px;">${aberta ? `✅ Aberta — ${inscritos}/${vagasAtual} vagas preenchidas` : '🚫 Fechada'}${prazoTxt}</div>
+      <label>Vagas (até ${chave.numTimes}, o tamanho da chave)</label>
+      <input type="number" min="1" max="${chave.numTimes}" id="inscVagas_${chave.id}" value="${vagasAtual}">
+      <label>Prazo pra inscrever (opcional, separado do preço)</label>
+      <div style="display:flex; gap:6px;">
+        <input type="date" id="inscPrazoData_${chave.id}" value="${chave.prazoInscricaoData||''}">
+        <input type="time" id="inscPrazoHora_${chave.id}" value="${chave.prazoInscricaoHora||''}">
+      </div>
+      <button class="btn ${aberta?'ghost':'accent'} small" style="margin-top:8px;" onclick="salvarInscricaoConfig('${chave.id}', ${!aberta})">${aberta?'🚫 Fechar inscrição':'✅ Abrir inscrição'}</button>
+    </div>`;
+  })();
   // Editar duplas / Zerar placares — movidos pro topo da tela a pedido do Ed
   // (antes ficavam lá embaixo, depois de rolar toda a lista de jogos ou a
   // árvore inteira).
-  const topActions = `${disponibilizarCard}<div class="footer-actions" style="margin-bottom:12px;">
+  const topActions = `${disponibilizarCard}${inscricaoConfigCard}<div class="footer-actions" style="margin-bottom:12px;">
     <button class="btn secondary" onclick="location.hash='/editar/${chave.id}'">Editar ${chave.modalidade==='quarteto'?'times':'duplas'}</button>
     <button class="btn ghost" onclick="resetResults('${chave.id}')">Zerar placares</button>
   </div>`;
@@ -8091,10 +8288,19 @@ function renderAtletasListHtml(chave){
       </div>`;
     }
     const a1 = (t.atleta1||'').trim(), a2 = (t.atleta2||'').trim();
-    const label = (a1 && a2) ? (a1 + ' / ' + a2) : (a1 || a2 || 'A definir');
-    return `<div class="atleta-row">
+    const dupla = (a1 && a2) ? (a1 + ' / ' + a2) : (a1 || a2 || 'A definir');
+    const nomeTimeDupla = (t.nome||'').trim();
+    // Quando a dupla também tem um nome de time (Ed, 21/09), mostra o nome
+    // em destaque e os atletas embaixo, igual já era feito pro quarteto.
+    return nomeTimeDupla ? `<div class="atleta-row">
+        <div class="rk">R${i+1}</div>
+        <div style="flex:1; min-width:0;">
+          <div class="atleta-time-nome">${escapeHtml(nomeTimeDupla)}${ctBadge}</div>
+          <div class="atleta-nomes">${escapeHtml(dupla)}</div>
+        </div>
+      </div>` : `<div class="atleta-row">
       <div class="rk">R${i+1}</div>
-      <div class="atleta-nomes" style="flex:1;">${escapeHtml(label)}${ctBadge}</div>
+      <div class="atleta-nomes" style="flex:1;">${escapeHtml(dupla)}${ctBadge}</div>
     </div>`;
   }).join('');
   return `<div class="card">
