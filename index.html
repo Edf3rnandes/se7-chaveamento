@@ -3345,6 +3345,7 @@ function renderSidebarNav(){
     items.push({ label:'🚪 Sair', action:true, danger:true });
   } else if(isAtletaLogado()){
     items.push({ label:'🙋 Minha área', hash:'/atleta/home' });
+    if(carrinhoAtleta.length) items.push({ label:'🛒 Carrinho (' + carrinhoAtleta.length + ')', hash:'/atleta/carrinho' });
     items.push({ label:'📝 Minhas inscrições', hash:'/atleta/minhas-inscricoes' });
     items.push({ label:'✏️ Meus dados', hash:'/atleta/perfil' });
     items.push({ label:'🚪 Sair', action:true, danger:true });
@@ -3411,6 +3412,7 @@ function route(){
     if(sub === 'inscrever-evento') return renderAtletaEventoInscricaoView(parts[2]);
     if(sub === 'inscrever') return renderAtletaInscricaoForm(parts[2], parts[3]);
     if(sub === 'minhas-inscricoes') return renderAtletaMinhasInscricoes();
+    if(sub === 'carrinho') return renderAtletaCarrinhoView();
     if(sub === 'pagamento') return renderAtletaPagamentoView(parts[2]);
     if(sub === 'perfil') return renderAtletaPerfil();
     return renderAtletaHome();
@@ -3699,7 +3701,10 @@ function linhaInscricaoCategoriaHtml(ev, cat, chave, minhas){
   } else {
     acao = `<button class="btn ghost small" onclick="location.hash='/atleta/inscrever/${ev.id}/${cat.id}'">Inscrever-se</button>`;
   }
-  return `<div class="atleta-row"><div class="atleta-nomes" style="flex:1;">${escapeHtml(chave.nome)}</div>${acao}</div>`;
+  const faixaIdade = (chave.idadeMin != null || chave.idadeMax != null)
+    ? `<div class="hint" style="margin-top:-2px;">${chave.idadeMin!=null && chave.idadeMax!=null ? ('De '+chave.idadeMin+' a '+chave.idadeMax+' anos') : chave.idadeMin!=null ? ('A partir de '+chave.idadeMin+' anos') : ('Até '+chave.idadeMax+' anos')}</div>`
+    : '';
+  return `<div class="atleta-row" style="align-items:flex-start;"><div style="flex:1;"><div class="atleta-nomes">${escapeHtml(chave.nome)}</div>${faixaIdade}</div>${acao}</div>`;
 }
 // Ed, 21/09: "precisa ter uma interface um pouquinho maior e mais robusta
 // na área dos atletas... está muito simplificado e está muito feio" — a
@@ -3805,6 +3810,15 @@ function renderAtletaEventoInscricaoView(eventoId){
     </div>`;
 }
 let inscricaoFormState = null;
+// Carrinho local (Ed, 21/09: "ficar como se fosse um adicionar carrinho,
+// porque a pessoa pode se inscrever em mais de uma competição naquele ato
+// de se inscrever, e aí fazer o pagamento do todo no final") — NADA entra
+// no Firestore enquanto só está no carrinho; cada item vira uma inscrição
+// de verdade (criarInscricao) só quando finalizarCarrinho() roda. Fica só
+// na memória da aba (não sobrevive a um F5) — de propósito, pra não
+// segurar dado sensível (CPF/data de nascimento de gente sem conta) em
+// localStorage sem necessidade.
+let carrinhoAtleta = [];
 function renderAtletaInscricaoForm(eventoId, categoriaId){
   attachAtletasListener(); // precisa do catálogo completo pra buscarParceiroPorCpf
   const ev = getEvento(eventoId);
@@ -3820,7 +3834,16 @@ function renderAtletaInscricaoForm(eventoId, categoriaId){
       <div class="wrap"><div class="empty"><div class="big">${stIcon}</div><div style="font-weight:700;">${stLabel}</div></div></div>`;
     return;
   }
-  const ehPrimeira = contarInscricoesAtivasNoEvento(_minhasInscricoesCache, eventoId) === 0;
+  // Ed, 21/09: "ficar como se fosse um adicionar carrinho" — se essa
+  // categoria já está no carrinho (ainda não enviada), não deixa duplicar.
+  const jaNoCarrinho = carrinhoAtleta.find(it => it.categoriaId === categoriaId);
+  if(jaNoCarrinho){
+    app.innerHTML = `${header('Inscrição', escapeHtml(chave.nome), '/atleta/home')}
+      <div class="wrap"><div class="empty"><div class="big">🛒</div><div style="font-weight:700;">Essa categoria já está no seu carrinho</div></div>
+      <button class="btn" style="margin-top:12px;" onclick="location.hash='/atleta/carrinho'">Ver carrinho</button></div>`;
+    return;
+  }
+  const ehPrimeira = itemEhPrimeiraNoEvento([{ cpf: perfil.cpf }], eventoId);
   const preco = precoInscricao(ev, hojeStr(), ehPrimeira);
   const vagas = vagasDaCategoria(chave) - (chave.times||[]).filter(t => teamRowHasData(t, chave.modalidade)).length;
   if(preco == null){
@@ -3839,7 +3862,14 @@ function renderAtletaInscricaoForm(eventoId, categoriaId){
     return;
   }
   if(!inscricaoFormState || inscricaoFormState._categoriaId !== categoriaId){
-    inscricaoFormState = { _categoriaId: categoriaId, _eventoId: eventoId, nomeTime:'', parceiros: ['','',''], parceirosCpf: ['','',''], parceirosUid: [null,null,null], camiseta:'' };
+    inscricaoFormState = { _categoriaId: categoriaId, _eventoId: eventoId, nomeTime:'',
+      parceiros: ['','',''], parceirosCpf: ['','',''], parceirosUid: [null,null,null],
+      // Ed, 21/09: "precisaríamos fazer essa inserção... do CT, da data de
+      // nascimento, o nome de jogo... como se fosse uma inscrição" — quando
+      // o parceiro não é encontrado por CPF, esses campos guardam o
+      // miniregistro dele (sem precisar criar conta).
+      parceirosNomeCompleto: ['','',''], parceirosNomeAtleta: ['','',''], parceirosDataNascimento: ['','',''], parceirosCt: ['','',''],
+      camiseta:'' };
   }
   const s = inscricaoFormState;
   const parceirosCount = modalidadeParceirosCount(chave.modalidade);
@@ -3847,9 +3877,9 @@ function renderAtletaInscricaoForm(eventoId, categoriaId){
   // está devidamente cadastrado ou cadastrar também o parceiro") — se achar
   // um atleta com esse CPF já cadastrado na plataforma, preenche o nome
   // sozinho (readonly, com um "trocar" pra digitar manualmente de novo);
-  // não achando, cai pro campo de nome livre de sempre (o parceiro "se
-  // cadastra" na prática só digitando o nome — pra virar conta de verdade
-  // ele precisa criar o próprio login em /atleta/cadastro).
+  // não achando, o parceiro vira um miniregistro (nome completo, nome de
+  // jogo opcional, data de nascimento, CT) guardado dentro da própria
+  // inscrição — sem precisar criar conta pra jogar.
   const parceirosHtml = Array.from({length:parceirosCount}, (_,i) => {
     const encontrado = s.parceirosUid[i];
     const label = parceirosCount>1?('parceiro '+(i+1)):'parceiro(a) de dupla';
@@ -3858,13 +3888,22 @@ function renderAtletaInscricaoForm(eventoId, categoriaId){
       <div class="hint" style="color:var(--success); font-weight:600;">✅ ${escapeHtml(s.parceiros[i]||'')} — cadastro encontrado</div>
       <button class="btn ghost small" style="margin-top:-4px; margin-bottom:8px;" onclick="limparParceiroEncontrado(${i})">Trocar / digitar outro nome</button>`;
     }
-    return `<label>CPF do ${label} (opcional — pra buscar quem já tem cadastro)</label>
+    return `<div style="border-top:1px solid var(--border); margin-top:10px; padding-top:10px;">
+      <label>CPF do ${label} (opcional — pra buscar quem já tem cadastro)</label>
       <div style="display:flex; gap:6px;">
         <input type="text" inputmode="numeric" value="${escapeHtmlAttr(s.parceirosCpf[i]||'')}" oninput="inscricaoFormState.parceirosCpf[${i}]=this.value.replace(/\\D/g,'')" placeholder="Só números">
         <button class="btn ghost small" style="width:auto; padding:0 14px;" onclick="buscarParceiroPorCpf(${i})">🔍 Buscar</button>
       </div>
-      <label>Nome do ${label}</label>
-      <input type="text" value="${escapeHtmlAttr(s.parceiros[i]||'')}" oninput="inscricaoFormState.parceiros[${i}]=this.value" placeholder="Nome completo (se não achar pelo CPF)">`;
+      <div class="hint" style="margin-top:-2px;">Não achou? Preenche os dados abaixo — vira um miniregistro desse parceiro, sem ele precisar criar conta.</div>
+      <label>Nome completo do ${label}</label>
+      <input type="text" value="${escapeHtmlAttr(s.parceirosNomeCompleto[i]||'')}" oninput="inscricaoFormState.parceirosNomeCompleto[${i}]=this.value">
+      <label>Nome de jogo (opcional)</label>
+      <input type="text" value="${escapeHtmlAttr(s.parceirosNomeAtleta[i]||'')}" oninput="inscricaoFormState.parceirosNomeAtleta[${i}]=this.value" placeholder="Como aparece na chave — em branco usa o nome completo">
+      <label>Data de nascimento</label>
+      <input type="date" value="${escapeHtmlAttr(s.parceirosDataNascimento[i]||'')}" oninput="inscricaoFormState.parceirosDataNascimento[${i}]=this.value">
+      <label>CT (opcional)</label>
+      <input type="text" value="${escapeHtmlAttr(s.parceirosCt[i]||'')}" oninput="inscricaoFormState.parceirosCt[${i}]=this.value" placeholder="Centro de treinamento">
+    </div>`;
   }).join('');
   const camisetaHtml = ev.pedirCamiseta ? `
     <label>Tamanho da camiseta</label>
@@ -3885,9 +3924,10 @@ function renderAtletaInscricaoForm(eventoId, categoriaId){
       <div class="card" style="text-align:center;">
         <div class="hint">Valor desta inscrição (${ehPrimeira?'1ª categoria neste evento':'2ª categoria ou mais neste evento'})</div>
         <div style="font-size:22px; font-weight:800;">${preco > 0 ? ('R$ ' + preco.toFixed(2).replace('.',',')) : 'Gratuita 🎉'}</div>
+        <div class="hint" style="margin-top:4px;">Esse valor pode ajustar dependendo do que já está no carrinho quando você adicionar.</div>
       </div>
-      <button class="btn" onclick="enviarInscricao('${eventoId}','${categoriaId}',${preco})">Enviar inscrição</button>
-      <div class="hint" style="margin-top:8px;">${preco > 0 ? 'O pagamento ainda é combinado direto com o organizador depois do envio — o QR Pix automático vem numa próxima etapa.' : 'Inscrição sem cobrança — ainda assim precisa ser aprovada pelo organizador.'}</div>
+      <button class="btn" onclick="adicionarAoCarrinho('${eventoId}','${categoriaId}')">🛒 Adicionar ao carrinho</button>
+      ${carrinhoAtleta.length ? `<button class="btn ghost small" style="margin-top:8px;" onclick="location.hash='/atleta/carrinho'">Ver carrinho (${carrinhoAtleta.length})</button>` : ''}
     </div>`;
 }
 // Busca um atleta cadastrado pelo CPF (11 dígitos) na cache já sincronizada
@@ -3900,7 +3940,7 @@ function buscarParceiroPorCpf(i){
   if(cpf.length !== 11){ toast('Digite um CPF válido (11 números)'); return; }
   if(_authUser && cpf === (getMeuAtletaPerfil()||{}).cpf){ toast('Esse CPF é o seu próprio cadastro'); return; }
   const encontrado = _atletasCache.find(a => (a.cpf||'') === cpf);
-  if(!encontrado){ toast('Nenhum atleta cadastrado com esse CPF — digite o nome dele manualmente abaixo'); return; }
+  if(!encontrado){ toast('Nenhum atleta cadastrado com esse CPF — preencha os dados dele manualmente abaixo'); return; }
   s.parceiros[i] = (encontrado.nomeAtleta||'').trim() || encontrado.nome || '';
   s.parceirosUid[i] = encontrado.uid;
   renderAtletaInscricaoForm(s._eventoId, s._categoriaId);
@@ -3913,76 +3953,191 @@ function limparParceiroEncontrado(i){
   s.parceirosCpf[i] = '';
   renderAtletaInscricaoForm(s._eventoId, s._categoriaId);
 }
-function enviarInscricao(eventoId, categoriaId, preco){
+function cpfNorm(v){ return (v||'').replace(/\D/g,''); }
+// ---------- preço 1ª/2ª+ considerando CPF, não só a conta logada ----------
+// Ed, 21/09: "como é gerado a cobrança para aquele CPF caso ele... se
+// inscreva por outro local" — antes só olhava as inscrições da PRÓPRIA
+// conta logada; agora considera qualquer aparição desse CPF no evento,
+// seja como titular OU como parceiro (inclusive ainda só no carrinho local,
+// sem ter sido enviada). Limitação conhecida: só enxerga o que passa pela
+// conta logada agora (próprias inscrições enviadas + carrinho) — se a MESMA
+// pessoa se inscrever de forma independente, por outra conta, isso exigiria
+// abrir a leitura de todas as inscrições do evento pra qualquer atleta
+// logado (troca de privacidade que não foi pedida); nesse caso o
+// organizador ajusta manualmente o valor na aprovação.
+function cpfJaApareceuNoEvento(cpf, eventoId){
+  const c = cpfNorm(cpf);
+  if(!c) return false;
+  const emInscricaoEnviada = _minhasInscricoesCache.some(i => i.eventoId === eventoId && i.status !== 'rejeitada' && (
+    cpfNorm(i.titularCpf) === c || (i.parceirosCpf||[]).some(pc => cpfNorm(pc) === c)
+  ));
+  if(emInscricaoEnviada) return true;
+  return carrinhoAtleta.some(item => item.eventoId === eventoId && item.membros.some(m => cpfNorm(m.cpf) === c));
+}
+function itemEhPrimeiraNoEvento(membros, eventoId){
+  return !membros.some(m => cpfJaApareceuNoEvento(m.cpf, eventoId));
+}
+// Monta o "membro" (titular ou parceiro) no formato usado pelo carrinho e
+// pela validação de idade — mesma forma pra quem tem conta (dados puxados
+// de _atletasCache) e pra quem foi digitado na hora (miniregistro).
+function montarMembrosDoFormulario(chave, perfil){
   const s = inscricaoFormState;
+  const parceirosCount = modalidadeParceirosCount(chave.modalidade);
+  const titular = { papel:'titular', nome: perfil.nome||'', nomeAtleta: perfil.nomeAtleta||'', cpf: perfil.cpf||'', dataNascimento: perfil.dataNascimento||'', ct: perfil.ct||'', uid: _authUser.uid };
+  const parceiros = Array.from({length:parceirosCount}, (_,i) => {
+    const uid = s.parceirosUid[i];
+    if(uid){
+      const at = _atletasCache.find(a => a.uid === uid) || {};
+      return { papel:'parceiro', nome: at.nome || s.parceiros[i] || '', nomeAtleta: at.nomeAtleta || '', cpf: at.cpf || '', dataNascimento: at.dataNascimento || '', ct: at.ct || '', uid };
+    }
+    return { papel:'parceiro', nome: (s.parceirosNomeCompleto[i]||'').trim(), nomeAtleta: (s.parceirosNomeAtleta[i]||'').trim(), cpf: cpfNorm(s.parceirosCpf[i]), dataNascimento: s.parceirosDataNascimento[i]||'', ct: (s.parceirosCt[i]||'').trim(), uid: null };
+  });
+  return [titular].concat(parceiros);
+}
+function adicionarAoCarrinho(eventoId, categoriaId){
+  const s = inscricaoFormState;
+  const ev = getEvento(eventoId);
   const cat = getCategoria(categoriaId);
   const chave = cat ? getChave(cat.chaveId) : null;
-  if(!chave || !s) return;
-  const parceirosCount = modalidadeParceirosCount(chave.modalidade);
-  const parceiros = (s.parceiros||[]).slice(0, parceirosCount).map(p=>(p||'').trim());
-  const parceirosUids = (s.parceirosUid||[]).slice(0, parceirosCount);
+  const perfil = getMeuAtletaPerfil();
+  if(!ev || !chave || !s || !perfil) return;
   const nomeTime = (s.nomeTime||'').trim();
   if(!nomeTime){ toast('Dê um nome pro seu time'); return; }
-  if(parceiros.some(p => !p)){ toast('Preencha o nome de todos os parceiros'); return; }
-  criarInscricao({
-    atletaUid: _authUser.uid, eventoId, categoriaId, chaveId: chave.id,
-    nomeTime, parceiros, parceirosUids, tamanhoCamiseta: s.camiseta || null, valor: preco
-  }).then((insc) => {
-    // Ed, 21/09: "preencher todos os dados, e aí gerar a parte de
-    // pagamentos... preciso que seja endereçada essa parte também no
-    // registro das inscrições" — quando tem valor, manda direto pra tela
-    // de pagamento (chave Pix do organizador) em vez de só um toast
-    // genérico dizendo "combinar depois".
-    if(preco > 0){
-      toast('Inscrição enviada!');
-      location.hash = '/atleta/pagamento/' + insc.id;
+  const parceirosCount = modalidadeParceirosCount(chave.modalidade);
+  for(let i=0; i<parceirosCount; i++){
+    const encontrado = s.parceirosUid[i];
+    if(encontrado) continue;
+    if(!(s.parceirosNomeCompleto[i]||'').trim() || !(s.parceirosDataNascimento[i]||'').trim()){
+      toast('Preencha nome completo e data de nascimento de todos os parceiros (ou busque pelo CPF)');
+      return;
+    }
+  }
+  const membros = montarMembrosDoFormulario(chave, perfil);
+  const foraDaFaixa = membrosForaDaFaixa(membros, chave, ev.dataInicio);
+  if(foraDaFaixa.length){
+    toast('Fora da faixa de idade da categoria: ' + foraDaFaixa.map(m => (m.nome||'—') + ' (' + m.idade + ' anos)').join(', '));
+    return;
+  }
+  const ehPrimeira = itemEhPrimeiraNoEvento(membros, eventoId);
+  const preco = precoInscricao(ev, hojeStr(), ehPrimeira);
+  if(preco == null){ toast('Inscrições fechadas pra esse evento no momento'); return; }
+  carrinhoAtleta.push({
+    id: uid('cart'), eventoId, categoriaId, chaveId: chave.id, eventoNome: ev.nome, categoriaNome: chave.nome,
+    nomeTime, membros, tamanhoCamiseta: s.camiseta || null, valor: preco, ehPrimeira
+  });
+  inscricaoFormState = null;
+  toast('Adicionado ao carrinho!');
+  location.hash = '/atleta/carrinho';
+}
+function removerDoCarrinho(idx){
+  carrinhoAtleta.splice(idx, 1);
+  renderAtletaCarrinhoView();
+  toast('Removido do carrinho');
+}
+function renderAtletaCarrinhoView(){
+  const itens = carrinhoAtleta;
+  const total = itens.reduce((s,it) => s + (it.valor||0), 0);
+  const rows = itens.map((it,idx) => `<div class="card">
+    <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:8px;">
+      <div style="min-width:0;">
+        <div style="font-weight:700;">${escapeHtml(it.nomeTime)}</div>
+        <div class="hint">${escapeHtml(it.categoriaNome)} • ${escapeHtml(it.eventoNome)}</div>
+      </div>
+      <button class="del-btn" onclick="removerDoCarrinho(${idx})">✕</button>
+    </div>
+    <div class="hint" style="margin-top:6px;">Com: ${it.membros.slice(1).map(m => escapeHtml(m.nomeAtleta || m.nome || '—')).join(', ') || '—'}</div>
+    <div class="hint" style="margin-top:2px; font-weight:700;">${it.valor > 0 ? ('R$ ' + it.valor.toFixed(2).replace('.',',') + (it.ehPrimeira ? '' : ' (2ª+ no evento)')) : 'Gratuita'}</div>
+  </div>`).join('');
+  app.innerHTML = `
+    ${header('Carrinho', itens.length ? (itens.length + ' inscri' + (itens.length===1?'ção':'ções')) : null, '/atleta/home')}
+    <div class="wrap">
+      ${rows || '<div class="empty"><div class="big">🛒</div><div style="font-weight:700;">Carrinho vazio</div><div style="font-size:13.5px;">Escolha um evento e uma categoria pra começar.</div></div>'}
+      ${itens.length ? `<div class="card" style="text-align:center;">
+        <div class="hint">Total a pagar</div>
+        <div style="font-size:24px; font-weight:800;">${total > 0 ? ('R$ ' + total.toFixed(2).replace('.',',')) : 'Gratuito'}</div>
+      </div>
+      <button class="btn" onclick="finalizarCarrinho()">Finalizar inscrições</button>` : ''}
+      <button class="btn ghost" style="margin-top:8px;" onclick="location.hash='/atleta/home'">+ Adicionar outra categoria</button>
+    </div>`;
+}
+// Só AQUI (finalizar) que cada item do carrinho vira uma inscrição de
+// verdade no Firestore — até esse momento não existia nenhum registro,
+// nenhuma vaga foi ocupada, nada apareceu pro organizador.
+function finalizarCarrinho(){
+  if(!carrinhoAtleta.length) return;
+  const itens = carrinhoAtleta.slice();
+  Promise.all(itens.map(it => {
+    it.membros.slice(1).forEach(m => { if(m.ct) garantirCtCadastrado(m.ct); });
+    return criarInscricao({
+      atletaUid: _authUser.uid, eventoId: it.eventoId, categoriaId: it.categoriaId, chaveId: it.chaveId,
+      nomeTime: it.nomeTime,
+      parceiros: it.membros.slice(1).map(m => m.nomeAtleta || m.nome || ''),
+      parceirosUids: it.membros.slice(1).map(m => m.uid || null),
+      parceirosCpf: it.membros.slice(1).map(m => m.cpf || null),
+      parceirosNomeCompleto: it.membros.slice(1).map(m => m.nome || null),
+      parceirosDataNascimento: it.membros.slice(1).map(m => m.dataNascimento || null),
+      parceirosCt: it.membros.slice(1).map(m => m.ct || null),
+      titularCpf: it.membros[0].cpf || null,
+      tamanhoCamiseta: it.tamanhoCamiseta || null, valor: it.valor
+    });
+  })).then((inscricoesCriadas) => {
+    carrinhoAtleta = [];
+    const ids = inscricoesCriadas.map(i => i.id).join(',');
+    const totalPago = inscricoesCriadas.reduce((s,i) => s + (i.valor||0), 0);
+    if(totalPago > 0){
+      toast('Inscrições enviadas!');
+      location.hash = '/atleta/pagamento/' + ids;
     } else {
-      toast('Inscrição enviada! Aguarde a aprovação do organizador.');
+      toast('Inscrições enviadas! Aguarde a aprovação do organizador.');
       location.hash = '/atleta/minhas-inscricoes';
     }
   }).catch(err => {
-    console.error('enviarInscricao', err);
+    console.error('finalizarCarrinho', err);
     toast('Não deu pra enviar agora — tenta de novo em alguns segundos');
   });
 }
-// Tela de pagamento (Ed, 21/09) — mostra a chave Pix do organizador e o
-// valor devido pra essa inscrição específica. Não tem gateway de verdade
-// (o "QR Pix automático" continua um passo futuro), mas pelo menos endereça
-// a parte que estava faltando: o atleta via só um texto dizendo "o
-// pagamento é combinado depois" sem NENHUM dado de pra onde mandar o Pix,
-// mesmo a chave já estando cadastrada na config do evento. Acessível tanto
-// logo depois de enviar a inscrição quanto de novo depois, a partir de
-// "Minhas inscrições" (ver renderAtletaMinhasInscricoes).
-function renderAtletaPagamentoView(inscricaoId){
-  const insc = getInscricao(inscricaoId);
-  if(!insc){ location.hash = '/atleta/minhas-inscricoes'; return; }
-  const ev = getEvento(insc.eventoId);
-  const cat = getCategoria(insc.categoriaId);
-  const chave = cat ? getChave(cat.chaveId) : null;
-  const pix = (ev && ev.chavePix) ? ev.chavePix.trim() : '';
+// Tela de pagamento (Ed, 21/09) — mostra a(s) chave(s) Pix do(s)
+// organizador(es) e o valor devido. Aceita um id só (link de "Minhas
+// inscrições") ou uma lista separada por vírgula (depois de finalizar o
+// carrinho) — nesse caso agrupa por EVENTO, porque cada organizador tem sua
+// própria chave Pix (não dá pra somar tudo numa transferência só se o
+// dinheiro vai pra contas diferentes).
+function renderAtletaPagamentoView(inscricaoIdsStr){
+  const ids = String(inscricaoIdsStr||'').split(',').filter(Boolean);
+  const inscricoes = ids.map(id => getInscricao(id)).filter(Boolean);
+  if(!inscricoes.length){ location.hash = '/atleta/minhas-inscricoes'; return; }
+  const total = inscricoes.reduce((s,i) => s + (i.valor||0), 0);
+  const porEvento = {};
+  inscricoes.forEach(i => { (porEvento[i.eventoId] = porEvento[i.eventoId] || []).push(i); });
+  const blocos = Object.keys(porEvento).map(eventoId => {
+    const ev = getEvento(eventoId);
+    const subtotal = porEvento[eventoId].reduce((s,i) => s + (i.valor||0), 0);
+    const pix = (ev && ev.chavePix) ? ev.chavePix.trim() : '';
+    const nomesCategorias = porEvento[eventoId].map(i => { const cat=getCategoria(i.categoriaId); const ch=cat?getChave(cat.chaveId):null; return ch?ch.nome:'—'; }).join(', ');
+    return `<div class="card">
+      <div class="card-title">💳 ${ev?escapeHtml(ev.nome):'Evento'}</div>
+      <div class="hint">${escapeHtml(nomesCategorias)}</div>
+      <div style="font-size:18px; font-weight:800; margin:6px 0;">R$ ${subtotal.toFixed(2).replace('.',',')}</div>
+      ${pix ? `
+      <label>Chave Pix do organizador</label>
+      <div style="display:flex; gap:6px; align-items:center;">
+        <input type="text" readonly value="${escapeHtmlAttr(pix)}" id="pixKeyInput_${eventoId}" style="flex:1;">
+        <button class="btn ghost small" style="width:auto; padding:0 14px;" onclick="copiarChavePix('${eventoId}')">📋 Copiar</button>
+      </div>
+      <div class="hint" style="margin-top:8px;">Envie o Pix pra essa chave com o valor acima e aguarde — o organizador confirma o pagamento e aprova cada inscrição manualmente.</div>
+      ` : `<div class="hint">O organizador ainda não cadastrou uma chave Pix pra esse evento — combine a forma de pagamento direto com ele.</div>`}
+    </div>`;
+  }).join('');
   app.innerHTML = `
-    ${header('Pagamento', chave ? escapeHtml(chave.nome) : null, '/atleta/minhas-inscricoes')}
+    ${header('Pagamento', inscricoes.length>1?(inscricoes.length+' inscrições'):null, '/atleta/minhas-inscricoes')}
     <div class="wrap">
-      <div class="card" style="text-align:center;">
-        <div class="hint">Valor da inscrição</div>
-        <div style="font-size:26px; font-weight:800;">R$ ${(insc.valor||0).toFixed(2).replace('.',',')}</div>
-      </div>
-      <div class="card">
-        <div class="card-title">💳 Como pagar</div>
-        ${pix ? `
-        <label>Chave Pix do organizador</label>
-        <div style="display:flex; gap:6px; align-items:center;">
-          <input type="text" readonly value="${escapeHtmlAttr(pix)}" id="pixKeyInput" style="flex:1;">
-          <button class="btn ghost small" style="width:auto; padding:0 14px;" onclick="copiarChavePix()">📋 Copiar</button>
-        </div>
-        <div class="hint" style="margin-top:8px;">Envie o Pix pra essa chave com o valor acima e aguarde — o organizador confirma o pagamento e aprova sua inscrição manualmente.</div>
-        ` : `<div class="hint">O organizador ainda não cadastrou uma chave Pix pra esse evento — combine a forma de pagamento direto com ele.</div>`}
-      </div>
+      ${inscricoes.length>1 ? `<div class="card" style="text-align:center;"><div class="hint">Total a pagar</div><div style="font-size:26px; font-weight:800;">R$ ${total.toFixed(2).replace('.',',')}</div></div>` : ''}
+      ${blocos}
       <button class="btn" onclick="location.hash='/atleta/minhas-inscricoes'">Ver minhas inscrições</button>
     </div>`;
 }
-function copiarChavePix(){
-  const el = document.getElementById('pixKeyInput');
+function copiarChavePix(eventoId){
+  const el = document.getElementById('pixKeyInput_' + eventoId);
   if(!el) return;
   el.select();
   try{ document.execCommand('copy'); toast('Chave Pix copiada'); }catch(e){ toast('Não deu pra copiar — selecione e copie manualmente'); }
@@ -4022,7 +4177,11 @@ function renderInscricoesPendentesView(){
       ${atleta.instagram ? `<div class="hint">Instagram: <a href="https://instagram.com/${escapeHtmlAttr(atleta.instagram)}" target="_blank" rel="noopener">@${escapeHtml(atleta.instagram)}</a></div>` : ''}
       <div class="hint" style="margin-top:4px;">Categoria: <strong>${escapeHtml(chave.nome)}</strong> (${escapeHtml(ev.nome)})</div>
       ${i.nomeTime ? `<div class="hint">Nome do time: <strong>${escapeHtml(i.nomeTime)}</strong></div>` : ''}
-      ${(i.parceiros||[]).length ? `<div class="hint">Com: ${i.parceiros.map(p=>escapeHtml(p)).join(', ')}</div>` : ''}
+      ${(i.parceiros||[]).length ? `<div class="hint">Com: ${(i.parceiros||[]).map((p,idx) => {
+        const nc = (i.parceirosNomeCompleto||[])[idx]; const nascP = (i.parceirosDataNascimento||[])[idx]; const ctP = (i.parceirosCt||[])[idx]; const cpfP = (i.parceirosCpf||[])[idx]; const uidP = (i.parceirosUids||[])[idx];
+        const detalhes = uidP ? '' : [nascP?('nasc. '+escapeHtml(nascP)):'', ctP?('CT: '+escapeHtml(ctP)):'', cpfP?('CPF: '+escapeHtml(cpfP)):''].filter(Boolean).join(' • ');
+        return escapeHtml(p) + (detalhes ? (' <span style="color:var(--muted2);">('+detalhes+')</span>') : '');
+      }).join(', ')}</div>` : ''}
       ${i.tamanhoCamiseta ? `<div class="hint">Camiseta: ${escapeHtml(i.tamanhoCamiseta)}</div>` : ''}
       <div class="hint" style="margin-top:4px; font-weight:700;">Valor: R$ ${(i.valor||0).toFixed(2).replace('.',',')}</div>
       <div style="display:flex; gap:8px; margin-top:8px;">
@@ -4629,6 +4788,43 @@ function precoInscricao(evento, dataRefStr, ehPrimeira){
   return ehPrimeira ? lote.valor1a : lote.valorDemais;
 }
 function formatBRL(n){ return 'R$ ' + Number(n||0).toFixed(2).replace('.', ','); }
+// ---------- faixa de idade por categoria (Ed, 21/09) ----------
+// Idade em anos completos numa data de referência (a gente usa a data de
+// INÍCIO do evento, não "hoje" — assim a validação não muda de resultado
+// conforme os dias passam entre a inscrição e o evento de verdade). Datas no
+// formato "YYYY-MM-DD" (o mesmo que <input type=date> já usa em todo canto).
+function calcularIdade(dataNascStr, dataRefStr){
+  if(!dataNascStr || !dataRefStr) return null;
+  const nasc = new Date(dataNascStr + 'T00:00:00');
+  const ref = new Date(dataRefStr + 'T00:00:00');
+  if(isNaN(nasc.getTime()) || isNaN(ref.getTime())) return null;
+  let idade = ref.getFullYear() - nasc.getFullYear();
+  const aindaNaoFezAniversario = (ref.getMonth() < nasc.getMonth()) || (ref.getMonth() === nasc.getMonth() && ref.getDate() < nasc.getDate());
+  if(aindaNaoFezAniversario) idade--;
+  return idade;
+}
+// Confere se UMA pessoa está dentro da faixa de idade da chave — chave sem
+// idadeMin/idadeMax (a maioria, categorias sem restrição) sempre libera.
+// Sem data de nascimento pra comparar, também libera (deixa o organizador
+// resolver na aprovação manual em vez de travar a inscrição por falta de
+// dado) — mas isso só deveria acontecer em cadastros bem antigos, já que o
+// cadastro do atleta e o miniformulário de parceiro (ver enviarInscricao)
+// exigem data de nascimento.
+function idadePermitida(dataNascStr, chave, dataRefStr){
+  if(chave.idadeMin == null && chave.idadeMax == null) return true;
+  const idade = calcularIdade(dataNascStr, dataRefStr);
+  if(idade == null) return true;
+  if(chave.idadeMin != null && idade < chave.idadeMin) return false;
+  if(chave.idadeMax != null && idade > chave.idadeMax) return false;
+  return true;
+}
+// Valida TODO o time (titular + parceiros) de uma vez — devolve a lista de
+// quem ficou fora da faixa (nome + idade calculada), pra mostrar um erro
+// específico em vez de um "não pode" genérico.
+function membrosForaDaFaixa(membros, chave, dataRefStr){
+  return membros.filter(m => m.dataNascimento && !idadePermitida(m.dataNascimento, chave, dataRefStr))
+    .map(m => ({ nome: m.nome, idade: calcularIdade(m.dataNascimento, dataRefStr) }));
+}
 // Lote ativo HOJE (pra mostrar o preço atual nos cards/hero da área pública)
 // — null se não tiver inscrição aberta agora (evento sem lote pra data atual).
 function loteAtivoHoje(evento){
@@ -5225,8 +5421,10 @@ function renderSetup(editId, categoriaCtx){
       formatoDecisivo: editing.formatoDecisivo || editing.formato,
       disputa3: editing.disputa3 !== false,
       horaInicio: (existingCat && existingCat.horaInicio) || '',
+      idadeMin: editing.idadeMin != null ? String(editing.idadeMin) : '',
+      idadeMax: editing.idadeMax != null ? String(editing.idadeMax) : '',
       times: JSON.parse(JSON.stringify(editing.times))
-    } : { _editId:null, _categoriaCtx: categoriaCtx||null, nome:'', modalidade:'dupla', formato:'unico', formatoDecisivo:'melhorDe3', disputa3:true, horaInicio:'', times:[],
+    } : { _editId:null, _categoriaCtx: categoriaCtx||null, nome:'', modalidade:'dupla', formato:'unico', formatoDecisivo:'melhorDe3', disputa3:true, horaInicio:'', idadeMin:'', idadeMax:'', times:[],
       // Ed, 21/09: "não precisaria... clicar na quantidade de times
       // cadastrados que tem para poder ser gerado... a ideia é deixar
       // acontecer vindo da quantidade de vagas preenchidas por meio das
@@ -5314,6 +5512,13 @@ function renderSetup(editId, categoriaCtx){
         <input type="text" id="nomeInput" placeholder="Ex: Sub-19 Feminino" value="${escapeHtmlAttr(s.nome)}" oninput="setupState.nome=this.value">
         <label>Horário de início (opcional)</label>
         <input type="time" value="${escapeHtmlAttr(s.horaInicio)}" oninput="setupState.horaInicio=this.value">
+
+        <label>Faixa de idade (opcional)</label>
+        <div style="display:flex; gap:8px;">
+          <input type="number" min="0" placeholder="Mín." value="${escapeHtmlAttr(s.idadeMin)}" oninput="setupState.idadeMin=this.value" style="flex:1;">
+          <input type="number" min="0" placeholder="Máx." value="${escapeHtmlAttr(s.idadeMax)}" oninput="setupState.idadeMax=this.value" style="flex:1;">
+        </div>
+        <div class="hint" style="margin-top:-2px;">Deixe em branco pra não restringir. Quando preenchida, a idade de cada atleta do time (titular e parceiros) é calculada na data de início do evento e precisa caber nessa faixa pra inscrição ser aceita.</div>
 
         ${modalidadeField}
 
@@ -7043,6 +7248,8 @@ function saveSetup(editId){
     c.disputa3 = s.disputa3;
     c.formato = s.formato;
     c.formatoDecisivo = s.formatoDecisivo;
+    c.idadeMin = (s.idadeMin!=null && s.idadeMin!=='') ? parseInt(s.idadeMin,10) : null;
+    c.idadeMax = (s.idadeMax!=null && s.idadeMax!=='') ? parseInt(s.idadeMax,10) : null;
     c.times = s.times;
     updateChave(c);
     const existingCat = categoriaByChaveId(c.id);
@@ -7058,6 +7265,8 @@ function saveSetup(editId){
       formato: s.formato,
       formatoDecisivo: s.formatoDecisivo,
       disputa3: s.disputa3,
+      idadeMin: (s.idadeMin!=null && s.idadeMin!=='') ? parseInt(s.idadeMin,10) : null,
+      idadeMax: (s.idadeMax!=null && s.idadeMax!=='') ? parseInt(s.idadeMax,10) : null,
       times: s.times,
       resultados: {},
       // Categorias novas nascem com o chaveamento ESCONDIDO do público até o
